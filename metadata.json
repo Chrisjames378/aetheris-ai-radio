@@ -1,0 +1,6 @@
+{
+  "name": "Aetheris Hybrid Radio",
+  "description": "Real-time AI Hybrid Collective radio network and custom Web Audio synthesizer powered by 512 collaborative models and a Superintendent orchestrator.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
