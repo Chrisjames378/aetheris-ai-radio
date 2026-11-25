@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, X } from 'lucide-react';
+import { Analytics } from '@vercel/analytics/react';
 import { synthEngine } from './audio/HybridSynthEngine';
 import { CollectiveView } from './components/CollectiveView';
 import { LiveBroadcastView } from './components/LiveBroadcastView';
@@ -837,6 +838,7 @@ export default function App() {
         </div>
       </footer>
       </div>
+      <Analytics />
     </div>
   );
 }
