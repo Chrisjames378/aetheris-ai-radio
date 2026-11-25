@@ -1,5 +1,15 @@
-import { AutomationTarget, StationGenre, SynthPatch } from '../types/radio';
+import {
+  AutomationTarget,
+  PerformanceFxState,
+  SpatialSoundscapeConfig,
+  StationGenre,
+  StemKey,
+  StemMixerState,
+  SynthPatch,
+} from '../types/radio';
 import { normToParamValue } from './automationConfig';
+import { computeStemSpatialCoords, resolvePatchSpatial } from './spatialConfig';
+import { encodeStereoWavBlob } from './wavEncoder';
 
 function midiToFreq(midi: number): number {
   return 440 * Math.pow(2, (midi - 69) / 12);
@@ -55,6 +65,14 @@ interface DeckState {
   id: 'A' | 'B';
   gainNode: GainNode | null;
   sidechainGain: GainNode | null;
+  drumsBus: GainNode | null;
+  bassBus: GainNode | null;
+  leadBus: GainNode | null;
+  padBus: GainNode | null;
+  drumsPanner: PannerNode | null;
+  bassPanner: PannerNode | null;
+  leadPanner: PannerNode | null;
+  padPanner: PannerNode | null;
   ambientSource: AudioBufferSourceNode | null;
   ambientGain: GainNode | null;
   genre: StationGenre;
@@ -66,9 +84,28 @@ interface DeckState {
   lastBassFreq: number | null;
 }
 
+const SPATIAL_STAGE_METERS = 3.2;
+
+const DEFAULT_STEM_MIXER: StemMixerState = {
+  drums: { gain: 1.0, mute: false, solo: false },
+  bass: { gain: 1.0, mute: false, solo: false },
+  lead: { gain: 1.0, mute: false, solo: false },
+  pad: { gain: 1.0, mute: false, solo: false },
+};
+
+const DEFAULT_PERF_FX: PerformanceFxState = {
+  lpfSweep: false,
+  hpfWash: false,
+  echoFreeze: false,
+  stereoWidth: 1.15,
+  arpMode: 'off',
+  arpOctaves: 1,
+};
+
 export class HybridSynthEngine {
   private ctx: AudioContext | null = null;
   private musicBus: GainNode | null = null;
+  private perfFilter: BiquadFilterNode | null = null;
   private dryGain: GainNode | null = null;
   private reverbNode: ConvolverNode | null = null;
   private reverbGain: GainNode | null = null;
@@ -76,6 +113,8 @@ export class HybridSynthEngine {
   private delayFeedback: GainNode | null = null;
   private delayGain: GainNode | null = null;
   private driveShaper: WaveShaperNode | null = null;
+  private widthMidGain: GainNode | null = null;
+  private widthSideGain: GainNode | null = null;
   private masterCompressor: DynamicsCompressorNode | null = null;
   private masterGain: GainNode | null = null;
   private voiceBus: GainNode | null = null;
@@ -86,11 +125,34 @@ export class HybridSynthEngine {
   private mediaRecorder: MediaRecorder | null = null;
   private recordedChunks: Blob[] = [];
 
+  private wavProcessor: ScriptProcessorNode | null = null;
+  private wavSink: GainNode | null = null;
+  private wavLeftChunks: Float32Array[] = [];
+  private wavRightChunks: Float32Array[] = [];
+  private isRecordingWav = false;
+
+  private stemMixer: StemMixerState = {
+    drums: { ...DEFAULT_STEM_MIXER.drums },
+    bass: { ...DEFAULT_STEM_MIXER.bass },
+    lead: { ...DEFAULT_STEM_MIXER.lead },
+    pad: { ...DEFAULT_STEM_MIXER.pad },
+  };
+  private perfFx: PerformanceFxState = { ...DEFAULT_PERF_FX };
+  private spatialOverride: SpatialSoundscapeConfig | null = null;
+
   private decks: Record<'A' | 'B', DeckState> = {
     A: {
       id: 'A',
       gainNode: null,
       sidechainGain: null,
+      drumsBus: null,
+      bassBus: null,
+      leadBus: null,
+      padBus: null,
+      drumsPanner: null,
+      bassPanner: null,
+      leadPanner: null,
+      padPanner: null,
       ambientSource: null,
       ambientGain: null,
       genre: 'witchhouse',
@@ -105,6 +167,14 @@ export class HybridSynthEngine {
       id: 'B',
       gainNode: null,
       sidechainGain: null,
+      drumsBus: null,
+      bassBus: null,
+      leadBus: null,
+      padBus: null,
+      drumsPanner: null,
+      bassPanner: null,
+      leadPanner: null,
+      padPanner: null,
       ambientSource: null,
       ambientGain: null,
       genre: 'witchhouse',
@@ -146,29 +216,110 @@ export class HybridSynthEngine {
     return this.ctx;
   }
 
+  private createSpatialPanner(ctx: AudioContext): PannerNode {
+    const panner = ctx.createPanner();
+    panner.panningModel = 'HRTF';
+    panner.distanceModel = 'inverse';
+    panner.refDistance = 1.0;
+    panner.maxDistance = 18;
+    panner.rolloffFactor = 0.45;
+    panner.coneInnerAngle = 360;
+    panner.coneOuterAngle = 360;
+    panner.coneOuterGain = 1;
+    return panner;
+  }
+
+  private configureAudioListener(ctx: AudioContext) {
+    const listener = ctx.listener;
+    const now = ctx.currentTime;
+    if ('positionX' in listener) {
+      listener.positionX.setValueAtTime(0, now);
+      listener.positionY.setValueAtTime(0, now);
+      listener.positionZ.setValueAtTime(0, now);
+      listener.forwardX.setValueAtTime(0, now);
+      listener.forwardY.setValueAtTime(0, now);
+      listener.forwardZ.setValueAtTime(-1, now);
+      listener.upX.setValueAtTime(0, now);
+      listener.upY.setValueAtTime(1, now);
+      listener.upZ.setValueAtTime(0, now);
+    } else {
+      const legacy = listener as unknown as {
+        setPosition?: (x: number, y: number, z: number) => void;
+        setOrientation?: (
+          fx: number,
+          fy: number,
+          fz: number,
+          ux: number,
+          uy: number,
+          uz: number
+        ) => void;
+      };
+      legacy.setPosition?.(0, 0, 0);
+      legacy.setOrientation?.(0, 0, -1, 0, 1, 0);
+    }
+  }
+
+  private initDeckBuses(ctx: AudioContext, deck: DeckState) {
+    if (!this.musicBus) return;
+    const deckGain = ctx.createGain();
+    deckGain.gain.value = deck.id === 'A' ? 1.0 : 0.0;
+    deckGain.connect(this.musicBus);
+    deck.gainNode = deckGain;
+
+    const sidechain = ctx.createGain();
+    sidechain.gain.value = 1.0;
+    sidechain.connect(deckGain);
+    deck.sidechainGain = sidechain;
+
+    const drumsPanner = this.createSpatialPanner(ctx);
+    drumsPanner.connect(deckGain);
+    deck.drumsPanner = drumsPanner;
+
+    const drumsBus = ctx.createGain();
+    drumsBus.gain.value = 1.0;
+    drumsBus.connect(drumsPanner);
+    deck.drumsBus = drumsBus;
+
+    const bassPanner = this.createSpatialPanner(ctx);
+    bassPanner.connect(sidechain);
+    deck.bassPanner = bassPanner;
+
+    const bassBus = ctx.createGain();
+    bassBus.gain.value = 1.0;
+    bassBus.connect(bassPanner);
+    deck.bassBus = bassBus;
+
+    const leadPanner = this.createSpatialPanner(ctx);
+    leadPanner.connect(sidechain);
+    deck.leadPanner = leadPanner;
+
+    const leadBus = ctx.createGain();
+    leadBus.gain.value = 1.0;
+    leadBus.connect(leadPanner);
+    deck.leadBus = leadBus;
+
+    const padPanner = this.createSpatialPanner(ctx);
+    padPanner.connect(sidechain);
+    deck.padPanner = padPanner;
+
+    const padBus = ctx.createGain();
+    padBus.gain.value = 1.0;
+    padBus.connect(padPanner);
+    deck.padBus = padBus;
+  }
+
   private setupGraph(ctx: AudioContext) {
+    this.configureAudioListener(ctx);
     this.musicBus = ctx.createGain();
     this.musicBus.gain.value = 0.85;
 
-    const deckAGain = ctx.createGain();
-    deckAGain.gain.value = 1.0;
-    deckAGain.connect(this.musicBus);
-    this.decks.A.gainNode = deckAGain;
+    this.initDeckBuses(ctx, this.decks.A);
+    this.initDeckBuses(ctx, this.decks.B);
 
-    const deckASidechain = ctx.createGain();
-    deckASidechain.gain.value = 1.0;
-    deckASidechain.connect(deckAGain);
-    this.decks.A.sidechainGain = deckASidechain;
-
-    const deckBGain = ctx.createGain();
-    deckBGain.gain.value = 0.0;
-    deckBGain.connect(this.musicBus);
-    this.decks.B.gainNode = deckBGain;
-
-    const deckBSidechain = ctx.createGain();
-    deckBSidechain.gain.value = 1.0;
-    deckBSidechain.connect(deckBGain);
-    this.decks.B.sidechainGain = deckBSidechain;
+    this.perfFilter = ctx.createBiquadFilter();
+    this.perfFilter.type = 'lowpass';
+    this.perfFilter.frequency.value = 18000;
+    this.perfFilter.Q.value = 0.8;
 
     this.dryGain = ctx.createGain();
     this.dryGain.gain.value = 0.78;
@@ -189,12 +340,53 @@ export class HybridSynthEngine {
     this.delayGain = ctx.createGain();
     this.delayGain.gain.value = 0.35;
 
+    // Mid-Side Stereo Width Processor
+    const msBus = ctx.createGain();
+    msBus.gain.value = 1.0;
+
+    const splitter = ctx.createChannelSplitter(2);
+    const merger = ctx.createChannelMerger(2);
+
+    const midL = ctx.createGain();
+    midL.gain.value = 0.5;
+    const midR = ctx.createGain();
+    midR.gain.value = 0.5;
+    const sideL = ctx.createGain();
+    sideL.gain.value = 0.5;
+    const sideR = ctx.createGain();
+    sideR.gain.value = -0.5;
+
+    this.widthMidGain = ctx.createGain();
+    this.widthMidGain.gain.value = 1.0;
+    this.widthSideGain = ctx.createGain();
+    this.widthSideGain.gain.value = this.perfFx.stereoWidth;
+
+    const invSide = ctx.createGain();
+    invSide.gain.value = -1.0;
+
+    msBus.connect(splitter);
+    splitter.connect(midL, 0);
+    splitter.connect(midR, 1);
+    midL.connect(this.widthMidGain);
+    midR.connect(this.widthMidGain);
+
+    splitter.connect(sideL, 0);
+    splitter.connect(sideR, 1);
+    sideL.connect(this.widthSideGain);
+    sideR.connect(this.widthSideGain);
+
+    this.widthMidGain.connect(merger, 0, 0);
+    this.widthSideGain.connect(merger, 0, 0);
+    this.widthMidGain.connect(merger, 0, 1);
+    this.widthSideGain.connect(invSide);
+    invSide.connect(merger, 0, 1);
+
     this.masterCompressor = ctx.createDynamicsCompressor();
-    this.masterCompressor.threshold.value = -14;
-    this.masterCompressor.knee.value = 18;
-    this.masterCompressor.ratio.value = 4;
-    this.masterCompressor.attack.value = 0.005;
-    this.masterCompressor.release.value = 0.16;
+    this.masterCompressor.threshold.value = -13;
+    this.masterCompressor.knee.value = 16;
+    this.masterCompressor.ratio.value = 4.5;
+    this.masterCompressor.attack.value = 0.004;
+    this.masterCompressor.release.value = 0.14;
 
     this.masterGain = ctx.createGain();
     this.masterGain.gain.value = this.masterVolume;
@@ -216,27 +408,32 @@ export class HybridSynthEngine {
     }
     this.noiseBuffer = nb;
 
-    // Routing
-    this.musicBus.connect(this.driveShaper);
+    // Routing: musicBus -> perfFilter -> driveShaper -> dry + reverb + delay -> MS width -> masterCompressor
+    this.musicBus.connect(this.perfFilter);
+    this.perfFilter.connect(this.driveShaper);
     this.driveShaper.connect(this.dryGain);
-    this.dryGain.connect(this.masterCompressor);
+    this.dryGain.connect(msBus);
 
     this.driveShaper.connect(this.reverbNode);
     this.reverbNode.connect(this.reverbGain);
-    this.reverbGain.connect(this.masterCompressor);
+    this.reverbGain.connect(msBus);
 
     this.driveShaper.connect(this.delayNode);
     this.delayNode.connect(this.delayFeedback);
     this.delayFeedback.connect(this.delayNode);
     this.delayNode.connect(this.delayGain);
-    this.delayGain.connect(this.masterCompressor);
+    this.delayGain.connect(msBus);
 
+    merger.connect(this.masterCompressor);
     this.voiceBus.connect(this.masterCompressor);
 
     this.masterCompressor.connect(this.masterGain);
     this.masterGain.connect(this.analyser);
     this.analyser.connect(ctx.destination);
     this.analyser.connect(this.streamDest);
+
+    this.applyStemMixerToGraph();
+    this.applyPerfFxToGraph();
   }
 
   public getAnalyser(): AnalyserNode | null {
@@ -270,6 +467,203 @@ export class HybridSynthEngine {
     return () => this.stepListeners.delete(cb);
   }
 
+  public getStemMixer(): StemMixerState {
+    return this.stemMixer;
+  }
+
+  public setStemMixer(next: StemMixerState) {
+    this.stemMixer = {
+      drums: { ...next.drums },
+      bass: { ...next.bass },
+      lead: { ...next.lead },
+      pad: { ...next.pad },
+    };
+    this.applyStemMixerToGraph();
+  }
+
+  private applyStemMixerToGraph() {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const keys: StemKey[] = ['drums', 'bass', 'lead', 'pad'];
+    const anySolo = keys.some((k) => this.stemMixer[k].solo);
+
+    (['A', 'B'] as const).forEach((deckKey) => {
+      const deck = this.decks[deckKey];
+      const map: Record<StemKey, GainNode | null> = {
+        drums: deck.drumsBus,
+        bass: deck.bassBus,
+        lead: deck.leadBus,
+        pad: deck.padBus,
+      };
+      keys.forEach((stem) => {
+        const node = map[stem];
+        if (!node) return;
+        const ch = this.stemMixer[stem];
+        const audible = !ch.mute && (!anySolo || ch.solo);
+        const targetGain = audible ? Math.max(0, Math.min(1.5, ch.gain)) : 0;
+        node.gain.setTargetAtTime(targetGain, now, 0.025);
+      });
+    });
+  }
+
+  public getPerformanceFx(): PerformanceFxState {
+    return this.perfFx;
+  }
+
+  public setPerformanceFx(partial: Partial<PerformanceFxState>) {
+    this.perfFx = { ...this.perfFx, ...partial };
+    this.applyPerfFxToGraph();
+  }
+
+  public getSpatialOverride(): SpatialSoundscapeConfig | null {
+    return this.spatialOverride;
+  }
+
+  public setSpatialOverride(next: SpatialSoundscapeConfig | null) {
+    this.spatialOverride = next;
+    if (!this.ctx) return;
+    const active = this.decks[this.activeDeck];
+    if (active.patch) {
+      this.applyDeckSpatialInstant(active, active.patch, active.currentStep);
+    }
+  }
+
+  private setPannerCoords(
+    panner: PannerNode | null,
+    coords: { x: number; y: number; z: number },
+    atTime: number,
+    rampEndTime?: number
+  ) {
+    if (!panner) return;
+    const px = coords.x * SPATIAL_STAGE_METERS;
+    const py = coords.y * SPATIAL_STAGE_METERS;
+    const pz = coords.z * SPATIAL_STAGE_METERS;
+
+    if ('positionX' in panner) {
+      if (rampEndTime !== undefined) {
+        panner.positionX.linearRampToValueAtTime(px, rampEndTime);
+        panner.positionY.linearRampToValueAtTime(py, rampEndTime);
+        panner.positionZ.linearRampToValueAtTime(pz, rampEndTime);
+      } else {
+        panner.positionX.setTargetAtTime(px, atTime, 0.05);
+        panner.positionY.setTargetAtTime(py, atTime, 0.05);
+        panner.positionZ.setTargetAtTime(pz, atTime, 0.05);
+      }
+    } else {
+      const legacy = panner as unknown as {
+        setPosition?: (x: number, y: number, z: number) => void;
+      };
+      legacy.setPosition?.(px, py, pz);
+    }
+  }
+
+  private applyDeckSpatialInstant(
+    deck: DeckState,
+    patch: SynthPatch,
+    step64: number
+  ) {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const cfg =
+      this.spatialOverride ?? resolvePatchSpatial(patch, deck.genre);
+    this.setPannerCoords(
+      deck.drumsPanner,
+      computeStemSpatialCoords(cfg.drums, step64),
+      now
+    );
+    this.setPannerCoords(
+      deck.bassPanner,
+      computeStemSpatialCoords(cfg.bass, step64),
+      now
+    );
+    this.setPannerCoords(
+      deck.leadPanner,
+      computeStemSpatialCoords(cfg.lead, step64),
+      now
+    );
+    this.setPannerCoords(
+      deck.padPanner,
+      computeStemSpatialCoords(cfg.pad, step64),
+      now
+    );
+  }
+
+  private scheduleDeckSpatialStep(
+    deck: DeckState,
+    patch: SynthPatch,
+    step64: number,
+    time: number,
+    stepDur: number
+  ) {
+    const cfg =
+      this.spatialOverride ?? resolvePatchSpatial(patch, deck.genre);
+    const nextStep = (step64 + 1) % 64;
+    const rampEnd = time + stepDur;
+    this.setPannerCoords(
+      deck.drumsPanner,
+      computeStemSpatialCoords(cfg.drums, nextStep),
+      time,
+      rampEnd
+    );
+    this.setPannerCoords(
+      deck.bassPanner,
+      computeStemSpatialCoords(cfg.bass, nextStep),
+      time,
+      rampEnd
+    );
+    this.setPannerCoords(
+      deck.leadPanner,
+      computeStemSpatialCoords(cfg.lead, nextStep),
+      time,
+      rampEnd
+    );
+    this.setPannerCoords(
+      deck.padPanner,
+      computeStemSpatialCoords(cfg.pad, nextStep),
+      time,
+      rampEnd
+    );
+  }
+
+  private applyPerfFxToGraph() {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+
+    if (this.widthSideGain) {
+      this.widthSideGain.gain.setTargetAtTime(
+        Math.max(0, Math.min(1.8, this.perfFx.stereoWidth)),
+        now,
+        0.04
+      );
+    }
+
+    if (this.perfFilter) {
+      if (this.perfFx.hpfWash) {
+        this.perfFilter.type = 'highpass';
+        this.perfFilter.frequency.setTargetAtTime(1150, now, 0.14);
+        this.perfFilter.Q.setTargetAtTime(2.6, now, 0.08);
+      } else if (this.perfFx.lpfSweep) {
+        this.perfFilter.type = 'lowpass';
+        this.perfFilter.frequency.setTargetAtTime(340, now, 0.12);
+        this.perfFilter.Q.setTargetAtTime(3.2, now, 0.08);
+      } else {
+        this.perfFilter.type = 'lowpass';
+        this.perfFilter.frequency.setTargetAtTime(18000, now, 0.1);
+        this.perfFilter.Q.setTargetAtTime(0.7, now, 0.08);
+      }
+    }
+
+    if (this.delayFeedback && this.dryGain) {
+      if (this.perfFx.echoFreeze) {
+        this.delayFeedback.gain.setTargetAtTime(0.86, now, 0.04);
+        this.dryGain.gain.setTargetAtTime(0.32, now, 0.06);
+      } else {
+        this.delayFeedback.gain.setTargetAtTime(0.38, now, 0.06);
+        this.dryGain.gain.setTargetAtTime(0.78, now, 0.06);
+      }
+    }
+  }
+
   private applyGlobalFx(patch: SynthPatch, timeConstant = 0.08) {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
@@ -296,7 +690,9 @@ export class HybridSynthEngine {
         timeConstant
       );
       this.delayGain.gain.setTargetAtTime(
-        patch.delayMix * 0.65,
+        this.perfFx.echoFreeze
+          ? Math.max(0.55, patch.delayMix * 0.8)
+          : patch.delayMix * 0.65,
         now,
         timeConstant
       );
@@ -313,6 +709,7 @@ export class HybridSynthEngine {
 
     if (!this.ctx) return;
     this.applyGlobalFx(patch, 0.08);
+    this.applyDeckSpatialInstant(active, patch, active.currentStep);
     if (active.ambientGain) {
       active.ambientGain.gain.setTargetAtTime(
         patch.noiseLevel * 0.045,
@@ -359,6 +756,7 @@ export class HybridSynthEngine {
     this.patch = nextPatch;
 
     this.applyGlobalFx(nextPatch, fadeSec * 0.35);
+    this.applyDeckSpatialInstant(incoming, nextPatch, alignedStep);
 
     if (incoming.gainNode) {
       incoming.gainNode.gain.cancelScheduledValues(now);
@@ -610,11 +1008,19 @@ export class HybridSynthEngine {
   ) {
     if (!this.ctx || !deck.gainNode) return;
     const targetBus = deck.gainNode;
-    const harmonicBus = deck.sidechainGain ?? deck.gainNode;
+    const drumsBus = deck.drumsBus ?? targetBus;
+    const bassBus = deck.bassBus ?? deck.sidechainGain ?? targetBus;
+    const leadBus = deck.leadBus ?? deck.sidechainGain ?? targetBus;
+    const padBus = deck.padBus ?? deck.sidechainGain ?? targetBus;
+    const harmonicSidechain = deck.sidechainGain ?? targetBus;
+
     const bar = Math.floor(step64 / 16); // 0..3
     const step = step64 % 16; // 0..15
     const stepDur = 60 / patch.bpm / 4;
     const effectivePatch = this.resolveStepPatch(patch, step64);
+
+    // Automate 3D HRTF PannerNode positions per stem across the 4-bar clock
+    this.scheduleDeckSpatialStep(deck, effectivePatch, step64, time, stepDur);
 
     // Update analog drive shaper cleanly if drive automation lane is enabled on active deck
     if (
@@ -637,8 +1043,8 @@ export class HybridSynthEngine {
       kickVel = 0.42;
     }
     if (kickVel > 0.05) {
-      this.triggerKick(time, kickVel, targetBus, genre);
-      this.triggerSidechainDuck(time, kickVel, harmonicBus, genre);
+      this.triggerKick(time, kickVel, drumsBus, genre);
+      this.triggerSidechainDuck(time, kickVel, harmonicSidechain, genre);
     }
 
     // Snare + Bar 2/3 ghost fill on step 13 or 14
@@ -649,7 +1055,7 @@ export class HybridSynthEngine {
       snareVel = 0.48;
     }
     if (snareVel > 0.05) {
-      this.triggerSnare(time, snareVel, targetBus, genre);
+      this.triggerSnare(time, snareVel, drumsBus, genre);
     }
 
     // Hat: thin odd 16th ghost hats on Bar 0; accent open hat turnaround at end of Bar 3
@@ -660,7 +1066,7 @@ export class HybridSynthEngine {
       hatVel = Math.max(hatVel, 0.92);
     }
     if (hatVel > 0.05) {
-      this.triggerHat(time, hatVel, targetBus, step64);
+      this.triggerHat(time, hatVel, drumsBus, step64);
     }
 
     // Bass + Bar 3 octave/5th turnaround on step 14
@@ -687,7 +1093,7 @@ export class HybridSynthEngine {
         nextFreq,
         stepDur * 1.65,
         effectivePatch,
-        harmonicBus,
+        bassBus,
         cutoffMul,
         deck.lastBassFreq,
         genre
@@ -711,7 +1117,50 @@ export class HybridSynthEngine {
         midiToFreq(midi),
         stepDur * 2.1,
         effectivePatch,
-        harmonicBus,
+        leadBus,
+        cutoffMul,
+        step64,
+        stepDur
+      );
+    }
+
+    // Real-time Performance Arpeggiator overlay woven from active chord voicing
+    const chords =
+      effectivePatch.steps.padChords.length > 0
+        ? effectivePatch.steps.padChords
+        : [[0, 2, 4]];
+    const chordSlot = bar * 2 + (step >= 8 ? 1 : 0);
+    const activeChord = chords[chordSlot % chords.length] || [0, 2, 4];
+
+    if (this.perfFx.arpMode !== 'off' && activeChord.length > 0) {
+      const arpNotes: number[] = [];
+      for (let oct = 0; oct < this.perfFx.arpOctaves; oct++) {
+        activeChord.forEach((deg) => arpNotes.push(deg + oct * 7));
+      }
+      const seq =
+        this.perfFx.arpMode === 'down'
+          ? [...arpNotes].reverse()
+          : this.perfFx.arpMode === 'updown' && arpNotes.length > 2
+            ? [...arpNotes, ...arpNotes.slice(1, -1).reverse()]
+            : arpNotes;
+      const arpDeg = seq[step64 % seq.length] ?? 0;
+      const arpMidi = degreeToMidi(
+        effectivePatch.rootMidi,
+        effectivePatch.scaleIntervals,
+        arpDeg,
+        2
+      );
+      this.triggerLead(
+        time,
+        midiToFreq(arpMidi),
+        stepDur * 0.85,
+        {
+          ...effectivePatch,
+          attack: 0.008,
+          release: 0.16,
+          filterCutoff: Math.min(6800, effectivePatch.filterCutoff * 1.25),
+        },
+        leadBus,
         cutoffMul,
         step64,
         stepDur
@@ -720,11 +1169,6 @@ export class HybridSynthEngine {
 
     // Pad chords evolve across all 4 bars (8 chord slots)
     if (step === 0 || step === 8) {
-      const chords =
-        effectivePatch.steps.padChords.length > 0
-          ? effectivePatch.steps.padChords
-          : [[0, 2, 4]];
-      const chordSlot = bar * 2 + (step === 8 ? 1 : 0);
       const baseChord = chords[chordSlot % chords.length] || [0, 2, 4];
       const evolvedChord =
         bar === 2 && step === 8 && chords.length <= 2
@@ -737,7 +1181,7 @@ export class HybridSynthEngine {
         evolvedChord,
         stepDur * 7.8,
         effectivePatch,
-        harmonicBus,
+        padBus,
         cutoffMul,
         step64,
         stepDur
@@ -1237,6 +1681,69 @@ export class HybridSynthEngine {
       };
       recorder.stop();
     });
+  }
+
+  public startWavRecording(): boolean {
+    if (!this.ctx || !this.masterGain || this.isRecordingWav) return false;
+    this.wavLeftChunks = [];
+    this.wavRightChunks = [];
+    const processor = this.ctx.createScriptProcessor(4096, 2, 2);
+    const sink = this.ctx.createGain();
+    sink.gain.value = 0;
+
+    processor.onaudioprocess = (event) => {
+      if (!this.isRecordingWav) return;
+      const inL = event.inputBuffer.getChannelData(0);
+      const inR =
+        event.inputBuffer.numberOfChannels > 1
+          ? event.inputBuffer.getChannelData(1)
+          : inL;
+      this.wavLeftChunks.push(new Float32Array(inL));
+      this.wavRightChunks.push(new Float32Array(inR));
+    };
+
+    this.masterGain.connect(processor);
+    processor.connect(sink);
+    sink.connect(this.ctx.destination);
+
+    this.wavProcessor = processor;
+    this.wavSink = sink;
+    this.isRecordingWav = true;
+    return true;
+  }
+
+  public stopWavRecordingAndDownload(filename: string): boolean {
+    if (!this.isRecordingWav || !this.ctx) return false;
+    this.isRecordingWav = false;
+
+    try {
+      this.masterGain?.disconnect(this.wavProcessor!);
+      this.wavProcessor?.disconnect();
+      this.wavSink?.disconnect();
+    } catch {
+      // Ignore disconnect errors
+    }
+    this.wavProcessor = null;
+    this.wavSink = null;
+
+    if (this.wavLeftChunks.length === 0) return false;
+    const blob = encodeStereoWavBlob(
+      this.wavLeftChunks,
+      this.wavRightChunks,
+      this.ctx.sampleRate
+    );
+    this.wavLeftChunks = [];
+    this.wavRightChunks = [];
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    return true;
   }
 
   public getAudioLatencyMs(): number | null {

@@ -23,12 +23,17 @@ import {
   loadPersistedCollective,
   savePersistedCollective,
 } from './server/persistence.ts';
+import { resolvePatchSpatial } from './src/audio/spatialConfig.ts';
 import {
+  AutoDjConfig,
+  AutoDjMode,
   CollectiveStateSnapshot,
   EvolutionLogEntry,
   HybridModel,
+  ListenerReactionEvent,
   ModelCluster,
   RadioBroadcastMessage,
+  ReactionKind,
   RegionalMoodBucket,
   ScheduledBroadcastSegment,
   SegmentType,
@@ -84,6 +89,21 @@ class BroadcastEngine {
   private consecutiveLoopErrors = 0;
   private lastAutoRunAt = 0;
   private quotaCooldownUntil = 0;
+  public autoDj: AutoDjConfig = {
+    enabled: false,
+    intervalBars: 8,
+    mode: 'mood_morph',
+    lastTransitionAt: null,
+  };
+  public recentReactions: ListenerReactionEvent[] = [];
+  public reactionTallies: Record<StationGenre, Record<ReactionKind, number>> = {
+    witchhouse: { fire: 0, hypnotic: 0, deep: 0, euphoric: 0, drop: 0 },
+    wave: { fire: 0, hypnotic: 0, deep: 0, euphoric: 0, drop: 0 },
+    future_garage: { fire: 0, hypnotic: 0, deep: 0, euphoric: 0, drop: 0 },
+    progressive_trance: { fire: 0, hypnotic: 0, deep: 0, euphoric: 0, drop: 0 },
+  };
+  private lastB2bBroadcastAt = new Map<string, number>();
+  private autoDjStepCounter = 0;
   private stationHealthStats: Record<
     StationGenre,
     {
@@ -536,6 +556,9 @@ class BroadcastEngine {
       regionalMood: this.regionalMood,
       worldListeners: this.clients.size,
       serverEpochMs: Date.now(),
+      autoDj: this.autoDj,
+      recentReactions: this.recentReactions.slice(0, 25),
+      reactionTallies: this.reactionTallies,
     };
   }
 
@@ -1120,6 +1143,9 @@ class BroadcastEngine {
       automation: partial.automation
         ? { ...(station.currentPatch.automation || {}), ...partial.automation }
         : station.currentPatch.automation,
+      spatial: partial.spatial
+        ? { ...(station.currentPatch.spatial || {}), ...partial.spatial }
+        : station.currentPatch.spatial,
     };
 
     this.broadcastAll({
@@ -1136,7 +1162,176 @@ class BroadcastEngine {
     this.persistState();
   }
 
+  public handleReactionPulse(
+    stationId: StationGenre,
+    kind: ReactionKind,
+    senderName: string,
+    regionId?: WorldRegionId
+  ) {
+    if (!ALL_GENRES.includes(stationId)) return null;
+    const validKinds: ReactionKind[] = ['fire', 'hypnotic', 'deep', 'euphoric', 'drop'];
+    if (!validKinds.includes(kind)) return null;
+
+    this.reactionTallies[stationId][kind] += 1;
+    const reaction: ListenerReactionEvent = {
+      id: `react-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      stationId,
+      kind,
+      senderName: (senderName || 'Listener').slice(0, 40),
+      regionId: regionId && WORLD_REGION_IDS.includes(regionId) ? regionId : 'north_america',
+      timestamp: Date.now(),
+    };
+    this.recentReactions.unshift(reaction);
+    if (this.recentReactions.length > 25) {
+      this.recentReactions.length = 25;
+    }
+
+    this.broadcastAll({
+      type: 'station:reaction_pulse',
+      payload: {
+        reaction,
+        tallies: this.reactionTallies[stationId],
+      },
+    });
+    return reaction;
+  }
+
+  public broadcastB2bMorph(
+    senderClientId: string,
+    stationId: StationGenre,
+    patch: SynthPatch,
+    senderName: string,
+    morphLabel: string
+  ) {
+    if (!ALL_GENRES.includes(stationId) || !patch || typeof patch.bpm !== 'number') return;
+    const now = Date.now();
+    const prev = this.lastB2bBroadcastAt.get(senderClientId) ?? 0;
+    if (now - prev < 80) return;
+    this.lastB2bBroadcastAt.set(senderClientId, now);
+
+    const payload: ServerWsEvent = {
+      type: 'b2b:morph_synced',
+      payload: {
+        stationId,
+        senderName: (senderName || 'Collaborator').slice(0, 48),
+        senderClientId,
+        patch,
+        morphLabel: (morphLabel || 'Live B2B Morph').slice(0, 80),
+      },
+    };
+    const serialized = JSON.stringify(payload);
+    for (const [id, session] of this.clients.entries()) {
+      if (id !== senderClientId && session.ws.readyState === WebSocket.OPEN) {
+        session.ws.send(serialized);
+      }
+    }
+  }
+
+  public setAutoDjConfig(partial: Partial<AutoDjConfig>) {
+    const validModes: AutoDjMode[] = ['mood_morph', 'station_cycle', 'harmonic_drift'];
+    const validIntervals: (4 | 8 | 16)[] = [4, 8, 16];
+    this.autoDj = {
+      ...this.autoDj,
+      enabled: typeof partial.enabled === 'boolean' ? partial.enabled : this.autoDj.enabled,
+      mode: partial.mode && validModes.includes(partial.mode) ? partial.mode : this.autoDj.mode,
+      intervalBars:
+        partial.intervalBars && validIntervals.includes(partial.intervalBars as 4 | 8 | 16)
+          ? (partial.intervalBars as 4 | 8 | 16)
+          : this.autoDj.intervalBars,
+    };
+    this.broadcastAll({
+      type: 'autodj:status',
+      payload: { autoDj: this.autoDj },
+    });
+  }
+
+  private runAutoDjTick() {
+    if (!this.autoDj.enabled || this.clients.size === 0) return;
+    const now = Date.now();
+    const counts = this.getStationCounts();
+    const activeStations = ALL_GENRES.filter((g) => counts[g] > 0);
+    const targets = activeStations.length > 0 ? activeStations : ['witchhouse' as StationGenre];
+
+    for (const stationId of targets) {
+      const station = this.stations[stationId];
+      if (station.isSynthesizing) continue;
+      const barSec = (60 / Math.max(60, station.currentPatch.bpm)) * 4;
+      const intervalMs = Math.max(8000, Math.round(barSec * this.autoDj.intervalBars * 1000));
+      if (this.autoDj.lastTransitionAt && now - this.autoDj.lastTransitionAt < intervalMs) {
+        continue;
+      }
+
+      // Compute regional mood valence for organic Auto-DJ steering
+      let totalUp = 0;
+      let totalDown = 0;
+      for (const rId of WORLD_REGION_IDS) {
+        totalUp += this.regionalMood[rId].upvotes;
+        totalDown += this.regionalMood[rId].downvotes;
+      }
+      const moodValence = (totalUp - totalDown) / Math.max(1, totalUp + totalDown);
+      this.autoDjStepCounter += 1;
+      const p = station.currentPatch;
+
+      // Subtle harmonic & timbral drift across bar boundaries
+      const cutoffSwing =
+        this.autoDjStepCounter % 2 === 0
+          ? 1 + 0.18 + Math.max(0, moodValence) * 0.14
+          : 0.86 - Math.max(0, -moodValence) * 0.1;
+      const nextCutoff = Math.round(
+        Math.min(5800, Math.max(320, p.filterCutoff * cutoffSwing))
+      );
+      const nextDetune = Math.round(
+        Math.min(40, Math.max(6, p.detuneCents + (this.autoDjStepCounter % 2 === 0 ? 4 : -4)))
+      );
+      const nextResonance = Number(
+        Math.min(9.5, Math.max(1.0, p.filterResonance + (this.autoDjStepCounter % 2 === 0 ? 0.6 : -0.5))).toFixed(1)
+      );
+      const nextReverb = Number(
+        Math.min(0.82, Math.max(0.22, p.reverbMix + (moodValence < 0 ? 0.05 : -0.04))).toFixed(2)
+      );
+
+      const currentSpatial = resolvePatchSpatial(p, stationId);
+      const nextLeadOrbit = Number(
+        Math.min(1.1, Math.max(0.25, currentSpatial.lead.orbitRadius + (this.autoDjStepCounter % 2 === 0 ? 0.14 : -0.12))).toFixed(2)
+      );
+      const nextPadElev = Number(
+        Math.min(0.8, Math.max(-0.2, currentSpatial.pad.y + (moodValence >= 0 ? 0.12 : -0.1))).toFixed(2)
+      );
+
+      this.autoDj.lastTransitionAt = now;
+      this.updateStationPatch(stationId, {
+        id: `${stationId}-adj-${this.autoDjStepCounter}`,
+        filterCutoff: nextCutoff,
+        detuneCents: nextDetune,
+        filterResonance: nextResonance,
+        reverbMix: nextReverb,
+        spatial: {
+          ...currentSpatial,
+          lead: {
+            ...currentSpatial.lead,
+            orbitRadius: nextLeadOrbit,
+          },
+          pad: {
+            ...currentSpatial.pad,
+            y: nextPadElev,
+          },
+        },
+        evolutionNote: `Auto-DJ (${this.autoDj.mode.replace('_', ' ')}): Cutoff ${nextCutoff}Hz · Q ${nextResonance} · 3D Orbit ${Math.round(nextLeadOrbit * 100)}%`,
+      });
+      this.broadcastAll({
+        type: 'autodj:status',
+        payload: { autoDj: this.autoDj },
+      });
+      break;
+    }
+  }
+
   public startAutonomousLoop() {
+    // Auto-DJ bar-aligned harmonic drift loop
+    setInterval(() => {
+      this.runAutoDjTick();
+    }, 3000);
+
     // Runs 24/7 with quota-aware cadence: every 4 min with live listeners, every 30 min when idle
     setInterval(() => {
       if (!process.env.GEMINI_API_KEY) return;
@@ -1199,6 +1394,23 @@ async function startServer() {
                 : 'witchhouse',
             },
           });
+        } else if (msg?.type === 'b2b:morph_preview') {
+          engine.broadcastB2bMorph(
+            clientId,
+            msg.stationId as StationGenre,
+            msg.patch as SynthPatch,
+            String(msg.senderName || 'Collaborator'),
+            String(msg.morphLabel || 'Live B2B Morph')
+          );
+        } else if (msg?.type === 'listener:reaction') {
+          engine.handleReactionPulse(
+            msg.stationId as StationGenre,
+            msg.kind as ReactionKind,
+            String(msg.senderName || 'Listener'),
+            msg.regionId as WorldRegionId | undefined
+          );
+        } else if (msg?.type === 'autodj:toggle') {
+          engine.setAutoDjConfig(msg.config || {});
         }
       } catch {
         // Ignore malformed client frames

@@ -1,0 +1,218 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerified() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'chris.james378@gmail.com'
+      );
+    }
+
+    function isValidGenre(genre) {
+      return genre in ['witchhouse', 'wave', 'future_garage', 'progressive_trance'];
+    }
+
+    function isValidRegion(region) {
+      return region in [
+        'north_america',
+        'latin_america',
+        'europe',
+        'middle_east_africa',
+        'asia_pacific',
+        'oceania'
+      ];
+    }
+
+    function isValidPatchMap(patch) {
+      return patch is map
+        && patch.keys().hasAll(['id', 'title', 'bpm', 'filterCutoff', 'osc1Wave', 'osc2Wave'])
+        && patch.title is string && patch.title.size() >= 1 && patch.title.size() <= 120
+        && patch.id is string && patch.id.size() >= 1 && patch.id.size() <= 128
+        && patch.bpm is number && patch.bpm >= 45 && patch.bpm <= 180
+        && patch.filterCutoff is number && patch.filterCutoff >= 100 && patch.filterCutoff <= 10000
+        && patch.osc1Wave in ['sawtooth', 'square', 'triangle', 'sine']
+        && patch.osc2Wave in ['sawtooth', 'square', 'triangle', 'sine']
+        && (!('authorModels' in patch) || (patch.authorModels is list && patch.authorModels.size() <= 8));
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'preferredRegion', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'preferredRegion', 'preferredStation', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && isValidRegion(data.preferredRegion)
+        && (!('preferredStation' in data) || isValidGenre(data.preferredStation))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'updatedAt'])
+        && data.uid == userId
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserPreset(data, userId, presetId) {
+      return data.keys().hasAll(['id', 'uid', 'name', 'genre', 'bpm', 'filterCutoff', 'patch', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'uid', 'name', 'genre', 'bpm', 'filterCutoff', 'patch', 'createdAt', 'updatedAt'])
+        && data.id == presetId
+        && data.uid == userId
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && isValidGenre(data.genre)
+        && data.bpm is number && data.bpm >= 45 && data.bpm <= 180
+        && data.filterCutoff is number && data.filterCutoff >= 100 && data.filterCutoff <= 10000
+        && isValidPatchMap(data.patch)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCommunityMix(data, mixId) {
+      return data.keys().hasAll(['id', 'authorUid', 'authorName', 'stationId', 'title', 'bpm', 'filterCutoff', 'patch', 'likesCount', 'isPublic', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'authorUid', 'authorName', 'stationId', 'title', 'bpm', 'filterCutoff', 'patch', 'likesCount', 'isPublic', 'createdAt', 'updatedAt'])
+        && data.id == mixId
+        && data.authorUid is string && isValidId(data.authorUid)
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80
+        && isValidGenre(data.stationId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 100
+        && data.bpm is number && data.bpm >= 45 && data.bpm <= 180
+        && data.filterCutoff is number && data.filterCutoff >= 100 && data.filterCutoff <= 10000
+        && isValidPatchMap(data.patch)
+        && data.likesCount is number && data.likesCount >= 0 && data.likesCount <= 1000000
+        && data.isPublic is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Startup connection probe path (read-only single doc get)
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+      allow list, write: if false;
+    }
+
+    // User profile & private PII isolation
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && (isOwner(userId) || isAdmin())
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'preferredRegion', 'preferredStation', 'updatedAt']);
+      allow delete: if isValidId(userId) && isAdmin();
+
+      match /private/{docId} {
+        allow get: if isValidId(userId) && docId == 'info' && (isOwner(userId) || isAdmin());
+        allow list: if false;
+        allow create: if isValidId(userId)
+          && docId == 'info'
+          && isOwner(userId)
+          && isValidUserPrivateInfo(incoming(), userId)
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(userId)
+          && docId == 'info'
+          && isOwner(userId)
+          && isValidUserPrivateInfo(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+        allow delete: if isValidId(userId) && docId == 'info' && isAdmin();
+      }
+
+      match /presets/{presetId} {
+        allow get: if isValidId(userId) && isValidId(presetId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && isOwner(userId) && existing().uid == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(presetId)
+          && isOwner(userId)
+          && isValidUserPreset(incoming(), userId, presetId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(presetId)
+          && (isOwner(userId) || isAdmin())
+          && isValidUserPreset(incoming(), userId, presetId)
+          && incoming().id == existing().id
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'genre', 'bpm', 'filterCutoff', 'patch', 'updatedAt']);
+        allow delete: if isValidId(userId) && isValidId(presetId) && (isOwner(userId) || isAdmin());
+      }
+    }
+
+    // Community shared mixes & morphed patches
+    match /communityMixes/{mixId} {
+      allow get: if isValidId(mixId)
+        && isSignedIn()
+        && (existing().isPublic == true || existing().authorUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (existing().isPublic == true || existing().authorUid == request.auth.uid);
+      allow create: if isValidId(mixId)
+        && isVerified()
+        && isValidCommunityMix(incoming(), mixId)
+        && incoming().authorUid == request.auth.uid
+        && incoming().likesCount == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(mixId)
+        && isVerified()
+        && isValidCommunityMix(incoming(), mixId)
+        && incoming().id == existing().id
+        && incoming().authorUid == existing().authorUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            existing().authorUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'stationId', 'bpm', 'filterCutoff', 'patch', 'isPublic', 'updatedAt'])
+          )
+          || (
+            existing().isPublic == true
+            && incoming().likesCount == existing().likesCount + 1
+            && incoming().diff(existing()).affectedKeys().hasOnly(['likesCount', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(mixId)
+        && isVerified()
+        && (existing().authorUid == request.auth.uid || isAdmin());
+    }
+  }
+}

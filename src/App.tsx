@@ -12,12 +12,17 @@ import { MoodReactiveBackgroundCanvas } from './components/MoodReactiveBackgroun
 import { SuperintendentView } from './components/SuperintendentView';
 import { SynthStudioView } from './components/SynthStudioView';
 import { TopBar, WorkspaceTab } from './components/TopBar';
+import { useFirebase } from './context/FirebaseContext';
 import {
+  AutoDjConfig,
   CollectiveStateSnapshot,
   EvolutionLogEntry,
+  PerformanceFxState,
   RadioBroadcastMessage,
+  ReactionKind,
   ServerWsEvent,
   StationGenre,
+  StemMixerState,
   SynthPatch,
   WorldRegionId,
   WsConnectionHealth,
@@ -54,6 +59,16 @@ function detectListenerRegion(): WorldRegionId {
 }
 
 export default function App() {
+  const {
+    user,
+    authBusy,
+    cloudError,
+    clearCloudError,
+    signIn,
+    signOutUser,
+    syncUserPreferences,
+  } = useFirebase();
+
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('broadcast');
   const [collective, setCollective] = useState<CollectiveStateSnapshot | null>(
     null
@@ -68,6 +83,15 @@ export default function App() {
   const [currentBar, setCurrentBar] = useState(0);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [isWavRecording, setIsWavRecording] = useState(false);
+  const [b2bSyncEnabled, setB2bSyncEnabled] = useState(false);
+  const [b2bNotice, setB2bNotice] = useState<string | null>(null);
+  const [stemMixer, setStemMixer] = useState<StemMixerState>(() =>
+    synthEngine.getStemMixer()
+  );
+  const [perfFx, setPerfFx] = useState<PerformanceFxState>(() =>
+    synthEngine.getPerformanceFx()
+  );
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [masterVolume, setMasterVolume] = useState(0.9);
@@ -97,6 +121,8 @@ export default function App() {
   const listenerRegionRef = useRef<WorldRegionId>(listenerRegion);
   const isAudioActiveRef = useRef<boolean>(isAudioActive);
   const patchTimerRef = useRef<number | null>(null);
+  const b2bTimerRef = useRef<number | null>(null);
+  const lastB2bSentRef = useRef<number>(0);
 
   useEffect(() => {
     activeStationRef.current = activeStationId;
@@ -231,6 +257,23 @@ export default function App() {
           wsRttMs: rtt,
           lastPongAt: Date.now(),
         }));
+        return;
+      }
+
+      if (event.type === 'b2b:morph_synced') {
+        if (event.payload.stationId === activeStationRef.current) {
+          synthEngine.setStationPatch(
+            event.payload.stationId,
+            event.payload.patch
+          );
+          setB2bNotice(
+            `B2B Sync from ${event.payload.senderName}: ${event.payload.morphLabel}`
+          );
+          if (b2bTimerRef.current !== null) {
+            window.clearTimeout(b2bTimerRef.current);
+          }
+          b2bTimerRef.current = window.setTimeout(() => setB2bNotice(null), 4000);
+        }
         return;
       }
 
@@ -415,6 +458,33 @@ export default function App() {
           };
         }
 
+        if (event.type === 'autodj:status') {
+          return {
+            ...prev,
+            autoDj: event.payload.autoDj,
+          };
+        }
+
+        if (event.type === 'station:reaction_pulse') {
+          const { reaction, tallies } = event.payload;
+          if (prev.recentReactions?.some((r) => r.id === reaction.id)) {
+            return prev;
+          }
+          return {
+            ...prev,
+            recentReactions: [reaction, ...(prev.recentReactions || [])].slice(0, 25),
+            reactionTallies: {
+              ...(prev.reactionTallies || {
+                witchhouse: { fire: 0, hypnotic: 0, deep: 0, euphoric: 0, drop: 0 },
+                wave: { fire: 0, hypnotic: 0, deep: 0, euphoric: 0, drop: 0 },
+                future_garage: { fire: 0, hypnotic: 0, deep: 0, euphoric: 0, drop: 0 },
+                progressive_trance: { fire: 0, hypnotic: 0, deep: 0, euphoric: 0, drop: 0 },
+              }),
+              [reaction.stationId]: tallies,
+            },
+          };
+        }
+
         return prev;
       });
     };
@@ -460,6 +530,7 @@ export default function App() {
     (stationId: StationGenre) => {
       setActiveStationId(stationId);
       setAuditioningEntry(null);
+      void syncUserPreferences(listenerRegionRef.current, stationId);
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(
           JSON.stringify({
@@ -480,21 +551,25 @@ export default function App() {
         }
       }
     },
-    [collective]
+    [collective, syncUserPreferences]
   );
 
-  const handleChangeListenerRegion = useCallback((regionId: WorldRegionId) => {
-    setListenerRegion(regionId);
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'tune',
-          stationId: activeStationRef.current,
-          regionId,
-        })
-      );
-    }
-  }, []);
+  const handleChangeListenerRegion = useCallback(
+    (regionId: WorldRegionId) => {
+      setListenerRegion(regionId);
+      void syncUserPreferences(regionId, activeStationRef.current);
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'tune',
+            stationId: activeStationRef.current,
+            regionId,
+          })
+        );
+      }
+    },
+    [syncUserPreferences]
+  );
 
   const handleTriggerEvolution = useCallback(
     async (stationId: StationGenre, prompt?: string) => {
@@ -615,6 +690,9 @@ export default function App() {
           automation: partial.automation
             ? { ...(st.currentPatch.automation || {}), ...partial.automation }
             : st.currentPatch.automation,
+          spatial: partial.spatial
+            ? { ...(st.currentPatch.spatial || {}), ...partial.spatial }
+            : st.currentPatch.spatial,
         };
         if (stationId === activeStationRef.current) {
           synthEngine.setStationPatch(stationId, updatedPatch);
@@ -711,6 +789,86 @@ export default function App() {
     }
   }, [collective]);
 
+  const handleChangeStemMixer = useCallback((next: StemMixerState) => {
+    setStemMixer(next);
+    synthEngine.setStemMixer(next);
+  }, []);
+
+  const handleChangePerfFx = useCallback(
+    (partial: Partial<PerformanceFxState>) => {
+      setPerfFx((prev) => {
+        const next = { ...prev, ...partial };
+        synthEngine.setPerformanceFx(partial);
+        return next;
+      });
+    },
+    []
+  );
+
+  const handleToggleWavRecord = useCallback(() => {
+    if (isWavRecording) {
+      synthEngine.stopWavRecordingAndDownload(
+        `aetheris-${activeStationId}-${Date.now()}.wav`
+      );
+      setIsWavRecording(false);
+    } else {
+      const ok = synthEngine.startWavRecording();
+      if (!ok) {
+        setErrorBanner('Start station audio first to capture a lossless WAV stem.');
+        return;
+      }
+      setIsWavRecording(true);
+    }
+  }, [isWavRecording, activeStationId]);
+
+  const handleBroadcastMorph = useCallback(
+    (patch: SynthPatch, morphLabel: string) => {
+      const now = Date.now();
+      if (now - lastB2bSentRef.current < 90) return;
+      lastB2bSentRef.current = now;
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'b2b:morph_preview',
+            stationId: activeStationRef.current,
+            patch,
+            morphLabel,
+            senderName: user?.displayName || 'Studio Producer',
+          })
+        );
+      }
+    },
+    [user]
+  );
+
+  const handleSendReaction = useCallback(
+    (kind: ReactionKind) => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'listener:reaction',
+            stationId: activeStationRef.current,
+            kind,
+            senderName: user?.displayName?.split(' ')[0] || 'Listener',
+            regionId: listenerRegionRef.current,
+          })
+        );
+      }
+    },
+    [user]
+  );
+
+  const handleUpdateAutoDj = useCallback((partial: Partial<AutoDjConfig>) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'autodj:toggle',
+          config: partial,
+        })
+      );
+    }
+  }, []);
+
   const handleToggleMoodCanvas = useCallback(() => {
     setShowMoodCanvas((prev) => {
       const next = !prev;
@@ -722,6 +880,8 @@ export default function App() {
       return next;
     });
   }, []);
+
+  const activeError = errorBanner || cloudError;
 
   return (
     <div className="relative min-h-screen bg-[#0A0C0F] text-[#F1F3F5] flex flex-col">
@@ -744,6 +904,10 @@ export default function App() {
           onMasterVolumeChange={handleMasterVolumeChange}
           showMoodCanvas={showMoodCanvas}
           onToggleMoodCanvas={handleToggleMoodCanvas}
+          authUser={user}
+          authBusy={authBusy}
+          onSignIn={() => void signIn()}
+          onSignOut={() => void signOutUser()}
         />
 
         <main className="mx-auto w-full max-w-[1440px] flex-1 px-3.5 py-4 sm:px-6 sm:py-6">
@@ -773,18 +937,21 @@ export default function App() {
           </div>
         )}
 
-        {errorBanner && (
+        {activeError && (
           <div
             role="alert"
             className="mb-5 flex items-start justify-between gap-3 rounded-md border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200"
           >
             <div className="flex min-w-0 items-start gap-2.5">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" aria-hidden="true" />
-              <span className="min-w-0 break-words leading-relaxed">{errorBanner}</span>
+              <span className="min-w-0 break-words leading-relaxed">{activeError}</span>
             </div>
             <button
               type="button"
-              onClick={() => setErrorBanner(null)}
+              onClick={() => {
+                setErrorBanner(null);
+                clearCloudError();
+              }}
               aria-label="Dismiss error"
               className="shrink-0 rounded p-1 text-red-300 hover:bg-red-500/20"
             >
@@ -823,6 +990,9 @@ export default function App() {
             onOpenSynthStudio={() => setActiveTab('synth')}
             userVotes={userVotes}
             onVote={handleVote}
+            b2bNotice={b2bNotice}
+            onSendReaction={handleSendReaction}
+            onUpdateAutoDj={handleUpdateAutoDj}
           />
         ) : activeTab === 'synth' ? (
           <SynthStudioView
@@ -835,6 +1005,16 @@ export default function App() {
             onStartAudio={handleStartAudio}
             currentStep={currentStep}
             currentBar={currentBar}
+            stemMixer={stemMixer}
+            onChangeStemMixer={handleChangeStemMixer}
+            perfFx={perfFx}
+            onChangePerfFx={handleChangePerfFx}
+            isWavRecording={isWavRecording}
+            onToggleWavRecord={handleToggleWavRecord}
+            b2bSyncEnabled={b2bSyncEnabled}
+            onToggleB2bSync={() => setB2bSyncEnabled((p) => !p)}
+            b2bNotice={b2bNotice}
+            onBroadcastMorph={handleBroadcastMorph}
             onPreviewPatch={handlePreviewPatch}
             onUpdatePatch={handleUpdatePatch}
             onTriggerEvolution={handleTriggerEvolution}

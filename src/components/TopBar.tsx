@@ -1,4 +1,5 @@
-import { Eye, EyeOff, Radio, Volume2, VolumeX } from 'lucide-react';
+import { Eye, EyeOff, LogIn, LogOut, Radio, Volume2, VolumeX } from 'lucide-react';
+import type { User } from 'firebase/auth';
 
 export type WorkspaceTab = 'broadcast' | 'synth' | 'collective' | 'superintendent';
 
@@ -11,6 +12,10 @@ interface TopBarProps {
   onMasterVolumeChange: (volume: number) => void;
   showMoodCanvas: boolean;
   onToggleMoodCanvas: () => void;
+  authUser: User | null;
+  authBusy: boolean;
+  onSignIn: () => void;
+  onSignOut: () => void;
 }
 
 const NAV_ITEMS: { id: WorkspaceTab; label: string }[] = [
@@ -29,12 +34,17 @@ export function TopBar({
   onMasterVolumeChange,
   showMoodCanvas,
   onToggleMoodCanvas,
+  authUser,
+  authBusy,
+  onSignIn,
+  onSignOut,
 }: TopBarProps) {
   const volumePercent = Math.round(masterVolume * 100);
+  const firstName = authUser?.displayName?.split(' ')[0] || 'Account';
 
   return (
     <header className="sticky top-0 z-30 border-b border-white/8 bg-[#0A0C0F]/95 backdrop-blur-sm">
-      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-2 px-3.5 py-2.5 sm:px-6 md:gap-8 md:py-3.5">
+      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-2 px-3.5 py-2.5 sm:px-6 md:gap-6 md:py-3.5">
         <button
           type="button"
           onClick={() => onSelectTab('broadcast')}
@@ -73,8 +83,8 @@ export function TopBar({
           })}
         </nav>
 
-        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          <div className="hidden lg:flex items-center gap-2.5">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+          <div className="hidden xl:flex items-center gap-2.5">
             <label
               htmlFor="master-volume-slider"
               className="text-xs text-[#8B949E] whitespace-nowrap"
@@ -90,7 +100,7 @@ export function TopBar({
               value={masterVolume}
               onChange={(e) => onMasterVolumeChange(Number(e.target.value))}
               aria-label="Master broadcast volume"
-              className="synth-slider w-24"
+              className="synth-slider w-20"
             />
             <span className="w-8 text-right font-mono text-xs text-[#D1D5DB] tabular-nums">
               {volumePercent}%
@@ -122,15 +132,39 @@ export function TopBar({
             ) : (
               <EyeOff className="h-3.5 w-3.5 text-[#6E7781]" aria-hidden="true" />
             )}
-            <span className="hidden md:inline">
+            <span className="hidden lg:inline">
               {showMoodCanvas ? 'Canvas On' : 'Canvas Off'}
             </span>
           </button>
 
+          {authUser ? (
+            <button
+              type="button"
+              disabled={authBusy}
+              onClick={onSignOut}
+              title={`Signed in as ${authUser.email || authUser.displayName} (click to sign out)`}
+              className="inline-flex items-center gap-1.5 rounded-md border border-white/14 bg-[#171B22] px-2 py-1.5 sm:px-2.5 sm:py-2 text-xs font-medium text-[#D1D5DB] hover:bg-[#1E242E] transition-colors whitespace-nowrap shrink-0"
+            >
+              <LogOut className="h-3.5 w-3.5 text-emerald-400 shrink-0" aria-hidden="true" />
+              <span className="hidden sm:inline">{firstName}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={authBusy}
+              onClick={onSignIn}
+              title="Sign in with Google for Cloud Presets & Mix Sharing"
+              className="inline-flex items-center gap-1.5 rounded-md border border-white/14 bg-[#171B22] px-2 py-1.5 sm:px-2.5 sm:py-2 text-xs font-medium text-[#D1D5DB] hover:bg-[#1E242E] transition-colors whitespace-nowrap shrink-0"
+            >
+              <LogIn className="h-3.5 w-3.5 text-amber-400 shrink-0" aria-hidden="true" />
+              <span className="hidden sm:inline">Sign In</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onToggleAudio}
-            className={`inline-flex items-center gap-1.5 sm:gap-2 rounded-md px-3 py-1.5 sm:px-4 sm:py-2 text-xs font-semibold transition-colors duration-150 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${
+            className={`inline-flex items-center gap-1.5 sm:gap-2 rounded-md px-2.5 py-1.5 sm:px-3.5 sm:py-2 text-xs font-semibold transition-colors duration-150 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${
               isAudioActive
                 ? 'bg-amber-500 text-[#0A0C0F] hover:bg-amber-400'
                 : 'bg-[#F1F3F5] text-[#0A0C0F] hover:bg-white'
@@ -140,13 +174,13 @@ export function TopBar({
               <>
                 <Volume2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                 <span className="hidden sm:inline">Live Audio On</span>
-                <span className="sm:hidden">Live On</span>
+                <span className="sm:hidden">Live</span>
               </>
             ) : (
               <>
                 <VolumeX className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                 <span className="hidden sm:inline">Tune In Live</span>
-                <span className="sm:hidden">Tune In</span>
+                <span className="sm:hidden">Tune</span>
               </>
             )}
           </button>

@@ -4,12 +4,16 @@ import {
   EvolutionLogEntry,
   FilterType,
   OscWaveform,
+  PerformanceFxState,
   StationGenre,
   StationState,
+  StemMixerState,
   SynthPatch,
 } from '../types/radio';
 import { AutomationLanesEditor } from './AutomationLanesEditor';
 import { SoundMorpherPanel } from './SoundMorpherPanel';
+import { SpatialStagePanel } from './SpatialStagePanel';
+import { StemMixerPanel } from './StemMixerPanel';
 import { SynthPresetManager } from './SynthPresetManager';
 
 interface SynthStudioViewProps {
@@ -22,6 +26,16 @@ interface SynthStudioViewProps {
   onStartAudio: () => void;
   currentStep: number;
   currentBar: number;
+  stemMixer: StemMixerState;
+  onChangeStemMixer: (next: StemMixerState) => void;
+  perfFx: PerformanceFxState;
+  onChangePerfFx: (partial: Partial<PerformanceFxState>) => void;
+  isWavRecording: boolean;
+  onToggleWavRecord: () => void;
+  b2bSyncEnabled: boolean;
+  onToggleB2bSync: () => void;
+  b2bNotice: string | null;
+  onBroadcastMorph: (patch: SynthPatch, morphLabel: string) => void;
   onPreviewPatch: (stationId: StationGenre, patch: SynthPatch) => void;
   onUpdatePatch: (stationId: StationGenre, partial: Partial<SynthPatch>) => void;
   onTriggerEvolution: (stationId: StationGenre, prompt?: string) => Promise<void>;
@@ -46,6 +60,16 @@ export function SynthStudioView({
   onStartAudio,
   currentStep,
   currentBar,
+  stemMixer,
+  onChangeStemMixer,
+  perfFx,
+  onChangePerfFx,
+  isWavRecording,
+  onToggleWavRecord,
+  b2bSyncEnabled,
+  onToggleB2bSync,
+  b2bNotice,
+  onBroadcastMorph,
   onPreviewPatch,
   onUpdatePatch,
   onTriggerEvolution,
@@ -99,6 +123,7 @@ export function SynthStudioView({
         delayTimeBeats: morphed.delayTimeBeats,
         steps: morphed.steps,
         automation: morphed.automation,
+        spatial: morphed.spatial,
       });
     },
     [activeStationId, onUpdatePatch]
@@ -237,8 +262,33 @@ export function SynthStudioView({
         isAudioActive={isAudioActive}
         currentBar={currentBar}
         currentStep={currentStep}
+        b2bSyncEnabled={b2bSyncEnabled}
+        onToggleB2bSync={onToggleB2bSync}
+        b2bNotice={b2bNotice}
+        onBroadcastMorph={onBroadcastMorph}
         onPreviewMorph={handlePreviewMorph}
         onCommitMorph={handleCommitMorph}
+      />
+
+      {/* 4-Stem Console, Mastering & Performance FX */}
+      <StemMixerPanel
+        stemMixer={stemMixer}
+        onChangeStemMixer={onChangeStemMixer}
+        perfFx={perfFx}
+        onChangePerfFx={onChangePerfFx}
+        isAudioActive={isAudioActive}
+        isWavRecording={isWavRecording}
+        onToggleWavRecord={onToggleWavRecord}
+      />
+
+      {/* 3D HRTF Spatial Soundscape Stage */}
+      <SpatialStagePanel
+        stationId={activeStationId}
+        patch={patch}
+        isAudioActive={isAudioActive}
+        currentBar={currentBar}
+        currentStep={currentStep}
+        onUpdatePatch={onUpdatePatch}
       />
 
       {/* Parameter Control Modules */}

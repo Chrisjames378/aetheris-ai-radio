@@ -40,6 +40,24 @@ export interface AutomationLane {
   points: number[];
 }
 
+export type SpatialMotionMode =
+  | 'static'
+  | 'orbit_cw'
+  | 'orbit_ccw'
+  | 'pendulum'
+  | 'figure_eight';
+
+export interface StemSpatialConfig {
+  x: number;
+  y: number;
+  z: number;
+  motion: SpatialMotionMode;
+  speedCyclesPerBar: number;
+  orbitRadius: number;
+}
+
+export type SpatialSoundscapeConfig = Record<StemKey, StemSpatialConfig>;
+
 export interface SynthPatch {
   id: string;
   title: string;
@@ -69,6 +87,7 @@ export interface SynthPatch {
   delayTimeBeats: number;
   steps: SynthStepMatrix;
   automation?: Partial<Record<AutomationTarget, AutomationLane>>;
+  spatial?: Partial<Record<StemKey, StemSpatialConfig>>;
 }
 
 export interface HybridModel {
@@ -215,6 +234,47 @@ export interface RegionalMoodBucket {
   lastVoteAt: number | null;
 }
 
+export type StemKey = 'drums' | 'bass' | 'lead' | 'pad';
+
+export interface StemChannelState {
+  gain: number;
+  mute: boolean;
+  solo: boolean;
+}
+
+export type StemMixerState = Record<StemKey, StemChannelState>;
+
+export type ArpMode = 'off' | 'up' | 'down' | 'updown';
+
+export interface PerformanceFxState {
+  lpfSweep: boolean;
+  hpfWash: boolean;
+  echoFreeze: boolean;
+  stereoWidth: number;
+  arpMode: ArpMode;
+  arpOctaves: 1 | 2;
+}
+
+export type ReactionKind = 'fire' | 'hypnotic' | 'deep' | 'euphoric' | 'drop';
+
+export interface ListenerReactionEvent {
+  id: string;
+  stationId: StationGenre;
+  kind: ReactionKind;
+  senderName: string;
+  regionId: WorldRegionId;
+  timestamp: number;
+}
+
+export type AutoDjMode = 'mood_morph' | 'station_cycle' | 'harmonic_drift';
+
+export interface AutoDjConfig {
+  enabled: boolean;
+  intervalBars: 4 | 8 | 16;
+  mode: AutoDjMode;
+  lastTransitionAt: number | null;
+}
+
 export interface CollectiveStateSnapshot {
   totalModels: number;
   superintendentName: string;
@@ -228,6 +288,9 @@ export interface CollectiveStateSnapshot {
   regionalMood: Record<WorldRegionId, RegionalMoodBucket>;
   worldListeners: number;
   serverEpochMs: number;
+  autoDj?: AutoDjConfig;
+  recentReactions?: ListenerReactionEvent[];
+  reactionTallies?: Record<StationGenre, Record<ReactionKind, number>>;
 }
 
 export type ServerWsEvent =
@@ -300,6 +363,29 @@ export type ServerWsEvent =
         clientSentAt: number;
         serverTimeMs: number;
         stationId: StationGenre;
+      };
+    }
+  | {
+      type: 'station:reaction_pulse';
+      payload: {
+        reaction: ListenerReactionEvent;
+        tallies: Record<ReactionKind, number>;
+      };
+    }
+  | {
+      type: 'b2b:morph_synced';
+      payload: {
+        stationId: StationGenre;
+        senderName: string;
+        senderClientId: string;
+        patch: SynthPatch;
+        morphLabel: string;
+      };
+    }
+  | {
+      type: 'autodj:status';
+      payload: {
+        autoDj: AutoDjConfig;
       };
     }
   | {

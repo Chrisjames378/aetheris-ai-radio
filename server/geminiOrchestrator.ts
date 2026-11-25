@@ -6,11 +6,16 @@ import {
   HybridModel,
   ModelCluster,
   ModelReasoningToken,
+  SpatialSoundscapeConfig,
   StationGenre,
   StationMemory,
   StationState,
   SynthPatch,
 } from '../src/types/radio.ts';
+import {
+  DEFAULT_SPATIAL_BY_GENRE,
+  sanitizeStemSpatial,
+} from '../src/audio/spatialConfig.ts';
 
 function getGeminiClient(apiVersion?: string): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -401,12 +406,12 @@ ${
 }
 
 Generate:
-1. An evolved SynthPatch JSON object with fresh, musical 16-step patterns (for bassSteps and leadSteps use integers 0..14 for scale degrees, or -1 for rest/silence), a 4-to-8-chord padChords harmonic progression (each chord an array of 3-4 scale degrees 0..14), and an automationShape ("swell", "ramp_up", "wave", or "gate") for the 4-bar filter cutoff sweep that builds on preferred traits and corrects any downvoted weaknesses.
-2. A concise superintendentDirective and improvementSummary explaining how the task force improved upon "${station.currentPatch.title}" using Superintendent memory.
+1. An evolved SynthPatch JSON object with fresh, musical 16-step patterns (for bassSteps and leadSteps use integers 0..14 for scale degrees, or -1 for rest/silence), a 4-to-8-chord padChords harmonic progression (each chord an array of 3-4 scale degrees 0..14), an automationShape ("swell", "ramp_up", "wave", or "gate") for the 4-bar filter cutoff sweep, and spatialAutomation positioning all 4 musical stems (drums, bass, lead, pad) in a 3D HRTF soundstage (x: -1..1 left/right, y: -0.8..0.8 elevation, z: -1..1 front/rear where negative is front, motion: "static" | "orbit_cw" | "orbit_ccw" | "pendulum" | "figure_eight", speedCyclesPerBar: 0.25 | 0.5 | 1.0, orbitRadius: 0..1.0; keep drums/bass anchored near center while animating lead/pad spatially).
+2. A concise superintendentDirective and improvementSummary explaining how the task force improved upon "${station.currentPatch.title}" and shaped its 3D spatial soundscape using Superintendent memory.
 3. Internal collective reasoning insights:
-   - patternEmergenceSummary: 1-2 sentences explaining causally why the new rhythm, melody, harmony, and timbre emerged from the previous cycle.
+   - patternEmergenceSummary: 1-2 sentences explaining causally why the new rhythm, melody, harmony, 3D spatial placement, and timbre emerged from the previous cycle.
    - memoryInfluence: 1 sentence explaining how listener ratings, preferred traits, or avoided traits steered this cycle.
-   - reasoningTokens: For each collaborating model in the task force (${taskForce.map((m) => m.id).join(', ')}), output { modelId, cluster, parameterFocus, reasoning, acousticImpact } explaining that specialist model's reasoning step.
+   - reasoningTokens: For each collaborating model in the task force (${taskForce.map((m) => m.id).join(', ')}), output { modelId, cluster, parameterFocus, reasoning, acousticImpact } explaining that specialist model's reasoning step (including Mastering/Spatial placement decisions).
 4. 2-4 spoken radio dialogue lines alternating between "${hostA.name}" (${hostA.modelId}) and "${hostB.name}" (${hostB.modelId}). Keep total dialogue under ~70 words so TTS plays briskly and naturally over the radio ducking.`;
 
   const { response, modelUsed } = await generateJsonWithFallback(
@@ -484,6 +489,60 @@ Generate:
             },
           },
           automationShape: { type: Type.STRING },
+          spatialAutomation: {
+            type: Type.OBJECT,
+            properties: {
+              drums: {
+                type: Type.OBJECT,
+                properties: {
+                  x: { type: Type.NUMBER },
+                  y: { type: Type.NUMBER },
+                  z: { type: Type.NUMBER },
+                  motion: { type: Type.STRING },
+                  speedCyclesPerBar: { type: Type.NUMBER },
+                  orbitRadius: { type: Type.NUMBER },
+                },
+                required: ['x', 'y', 'z', 'motion', 'speedCyclesPerBar', 'orbitRadius'],
+              },
+              bass: {
+                type: Type.OBJECT,
+                properties: {
+                  x: { type: Type.NUMBER },
+                  y: { type: Type.NUMBER },
+                  z: { type: Type.NUMBER },
+                  motion: { type: Type.STRING },
+                  speedCyclesPerBar: { type: Type.NUMBER },
+                  orbitRadius: { type: Type.NUMBER },
+                },
+                required: ['x', 'y', 'z', 'motion', 'speedCyclesPerBar', 'orbitRadius'],
+              },
+              lead: {
+                type: Type.OBJECT,
+                properties: {
+                  x: { type: Type.NUMBER },
+                  y: { type: Type.NUMBER },
+                  z: { type: Type.NUMBER },
+                  motion: { type: Type.STRING },
+                  speedCyclesPerBar: { type: Type.NUMBER },
+                  orbitRadius: { type: Type.NUMBER },
+                },
+                required: ['x', 'y', 'z', 'motion', 'speedCyclesPerBar', 'orbitRadius'],
+              },
+              pad: {
+                type: Type.OBJECT,
+                properties: {
+                  x: { type: Type.NUMBER },
+                  y: { type: Type.NUMBER },
+                  z: { type: Type.NUMBER },
+                  motion: { type: Type.STRING },
+                  speedCyclesPerBar: { type: Type.NUMBER },
+                  orbitRadius: { type: Type.NUMBER },
+                },
+                required: ['x', 'y', 'z', 'motion', 'speedCyclesPerBar', 'orbitRadius'],
+              },
+            },
+            required: ['drums', 'bass', 'lead', 'pad'],
+          },
           topic: { type: Type.STRING },
           dialogue: {
             type: Type.ARRAY,
@@ -534,6 +593,7 @@ Generate:
           'leadSteps',
           'padChords',
           'automationShape',
+          'spatialAutomation',
           'topic',
           'dialogue',
         ],
@@ -581,6 +641,15 @@ Generate:
     Array.isArray(parsed.scaleIntervals) && parsed.scaleIntervals.length >= 5
       ? parsed.scaleIntervals.slice(0, 7).map((n: number) => clamp(Math.round(n), 0, 11))
       : station.currentPatch.scaleIntervals;
+
+  const spatialDefaults = DEFAULT_SPATIAL_BY_GENRE[station.id];
+  const rawSpatial = (parsed.spatialAutomation || {}) as Partial<SpatialSoundscapeConfig>;
+  const spatial: SpatialSoundscapeConfig = {
+    drums: sanitizeStemSpatial(rawSpatial.drums, spatialDefaults.drums),
+    bass: sanitizeStemSpatial(rawSpatial.bass, spatialDefaults.bass),
+    lead: sanitizeStemSpatial(rawSpatial.lead, spatialDefaults.lead),
+    pad: sanitizeStemSpatial(rawSpatial.pad, spatialDefaults.pad),
+  };
 
   const patch: SynthPatch = {
     id: `${station.id}-c${station.cycleCount + 1}-${Date.now()}`,
@@ -630,6 +699,7 @@ Generate:
         ),
       },
     },
+    spatial,
   };
 
   const dialogueLines: BroadcastLine[] = (Array.isArray(parsed.dialogue) ? parsed.dialogue : [])

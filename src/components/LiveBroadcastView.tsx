@@ -11,10 +11,14 @@ import {
   Volume2,
 } from 'lucide-react';
 import {
+  AutoDjConfig,
   CollectiveStateSnapshot,
   RadioBroadcastMessage,
+  ReactionKind,
   StationGenre,
 } from '../types/radio';
+import { resolvePatchSpatial } from '../audio/spatialConfig';
+import { LiveReactionBar } from './LiveReactionBar';
 import { RadioScheduleWidget } from './RadioScheduleWidget';
 import { SpectrumVisualizer } from './SpectrumVisualizer';
 
@@ -40,6 +44,9 @@ interface LiveBroadcastViewProps {
     targetId: string,
     vote: 'up' | 'down'
   ) => Promise<void>;
+  b2bNotice: string | null;
+  onSendReaction: (kind: ReactionKind) => void;
+  onUpdateAutoDj: (partial: Partial<AutoDjConfig>) => void;
 }
 
 const STATION_ORDER: StationGenre[] = [
@@ -95,6 +102,9 @@ export function LiveBroadcastView({
   onOpenSynthStudio,
   userVotes,
   onVote,
+  b2bNotice,
+  onSendReaction,
+  onUpdateAutoDj,
 }: LiveBroadcastViewProps) {
   const [topicInput, setTopicInput] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
@@ -230,6 +240,11 @@ export function LiveBroadcastView({
                     </span>
                     <span aria-hidden="true">/</span>
                     <span>Cutoff {patch.filterCutoff} Hz</span>
+                    <span aria-hidden="true">/</span>
+                    <span>
+                      3D HRTF ({resolvePatchSpatial(patch, activeStationId).lead.motion.replace('_', ' ')} ·{' '}
+                      {resolvePatchSpatial(patch, activeStationId).pad.motion.replace('_', ' ')})
+                    </span>
                     <span aria-hidden="true">/</span>
                     <span>Cycle {station.cycleCount}</span>
                   </div>
@@ -578,6 +593,32 @@ export function LiveBroadcastView({
           </form>
         </div>
       </section>
+
+      {/* Live Listener Reactions & Autonomous Auto-DJ */}
+      <LiveReactionBar
+        activeStationId={activeStationId}
+        tallies={
+          collective.reactionTallies?.[activeStationId] ?? {
+            fire: 0,
+            hypnotic: 0,
+            deep: 0,
+            euphoric: 0,
+            drop: 0,
+          }
+        }
+        recentReactions={collective.recentReactions ?? []}
+        autoDj={
+          collective.autoDj ?? {
+            enabled: false,
+            intervalBars: 8,
+            mode: 'mood_morph',
+            lastTransitionAt: null,
+          }
+        }
+        b2bNotice={b2bNotice}
+        onSendReaction={onSendReaction}
+        onUpdateAutoDj={onUpdateAutoDj}
+      />
 
       {/* 4-Column Collective Readout Strip */}
       <section

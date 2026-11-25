@@ -8,6 +8,7 @@ import {
   SynthPatch,
   WorldRegionId,
 } from '../src/types/radio.ts';
+import { DEFAULT_SPATIAL_BY_GENRE } from '../src/audio/spatialConfig.ts';
 
 const CLUSTERS: ModelCluster[] = [
   'Synthesis',
@@ -208,6 +209,7 @@ export const INITIAL_PATCHES: Record<StationGenre, SynthPatch> = {
         ),
       },
     },
+    spatial: DEFAULT_SPATIAL_BY_GENRE.witchhouse,
   },
   wave: {
     id: 'wv-init-01',
@@ -270,6 +272,7 @@ export const INITIAL_PATCHES: Record<StationGenre, SynthPatch> = {
         ),
       },
     },
+    spatial: DEFAULT_SPATIAL_BY_GENRE.wave,
   },
   future_garage: {
     id: 'fg-init-01',
@@ -332,6 +335,7 @@ export const INITIAL_PATCHES: Record<StationGenre, SynthPatch> = {
         ),
       },
     },
+    spatial: DEFAULT_SPATIAL_BY_GENRE.future_garage,
   },
   progressive_trance: {
     id: 'pt-init-01',
@@ -394,6 +398,7 @@ export const INITIAL_PATCHES: Record<StationGenre, SynthPatch> = {
         ),
       },
     },
+    spatial: DEFAULT_SPATIAL_BY_GENRE.progressive_trance,
   },
 };
 

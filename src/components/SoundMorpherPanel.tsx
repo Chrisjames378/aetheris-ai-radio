@@ -1,5 +1,5 @@
 import { PointerEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, GitMerge, Play, RotateCcw, Sparkles } from 'lucide-react';
+import { Check, GitMerge, Play, Radio, RotateCcw, Sparkles } from 'lucide-react';
 import {
   morphFourCornerPatches,
   morphSynthPatches,
@@ -21,6 +21,10 @@ interface SoundMorpherPanelProps {
   isAudioActive: boolean;
   currentBar: number;
   currentStep: number;
+  b2bSyncEnabled: boolean;
+  onToggleB2bSync: () => void;
+  b2bNotice: string | null;
+  onBroadcastMorph: (patch: SynthPatch, morphLabel: string) => void;
   onPreviewMorph: (patch: SynthPatch | null) => void;
   onCommitMorph: (morphedPatch: SynthPatch) => void;
 }
@@ -40,6 +44,10 @@ export function SoundMorpherPanel({
   isAudioActive,
   currentBar,
   currentStep,
+  b2bSyncEnabled,
+  onToggleB2bSync,
+  b2bNotice,
+  onBroadcastMorph,
   onPreviewMorph,
   onCommitMorph,
 }: SoundMorpherPanelProps) {
@@ -142,10 +150,13 @@ export function SoundMorpherPanel({
     xyPos,
   ]);
 
-  // Push live local audio preview whenever morphedPatch changes
+  // Push live local audio preview + optional B2B WebSocket sync whenever morphedPatch changes
   useEffect(() => {
     onPreviewMorph(morphedPatch);
-  }, [morphedPatch, onPreviewMorph]);
+    if (morphedPatch && b2bSyncEnabled) {
+      onBroadcastMorph(morphedPatch, morphedPatch.title);
+    }
+  }, [morphedPatch, onPreviewMorph, b2bSyncEnabled, onBroadcastMorph]);
 
   const cornerWeights = useMemo(() => {
     const x = xyPos.x;
@@ -226,6 +237,21 @@ export function SoundMorpherPanel({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <button
+            type="button"
+            aria-pressed={b2bSyncEnabled}
+            onClick={onToggleB2bSync}
+            title="Broadcast your live morph tweaks over WebSockets to collaborators on this station"
+            className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+              b2bSyncEnabled
+                ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-300'
+                : 'border-white/12 bg-[#0B0D11] text-[#9CA3AF] hover:text-[#F1F3F5]'
+            }`}
+          >
+            <Radio className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>{b2bSyncEnabled ? 'B2B Live Sync On' : 'B2B Sync Off'}</span>
+          </button>
+
           <div className="inline-flex rounded-md border border-white/10 bg-[#0B0D11] p-1">
             <button
               type="button"
@@ -258,6 +284,12 @@ export function SoundMorpherPanel({
           </div>
         </div>
       </div>
+
+      {b2bNotice && (
+        <div className="rounded border border-emerald-500/35 bg-emerald-500/10 px-3 py-1.5 font-mono text-[11px] text-emerald-300">
+          {b2bNotice}
+        </div>
+      )}
 
       {mode === 'ab' ? (
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 lg:items-center">

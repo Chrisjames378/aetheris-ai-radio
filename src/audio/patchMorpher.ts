@@ -3,6 +3,7 @@ import {
   AutomationTarget,
   SynthPatch,
 } from '../types/radio';
+import { morphSpatialConfig } from './spatialConfig';
 
 const AUTOMATION_TARGETS: AutomationTarget[] = [
   'filterCutoff',
@@ -164,6 +165,7 @@ export function morphSynthPatches(
       padChords,
     },
     automation: morphAutomation(patchA.automation, patchB.automation, t),
+    spatial: morphSpatialConfig(patchA.spatial, patchB.spatial, t),
   };
 }
 

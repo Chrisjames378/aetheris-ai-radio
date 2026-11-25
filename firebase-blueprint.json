@@ -1,0 +1,198 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Publicly isolated non-PII listener profile for Aetheris Hybrid Radio.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "preferredRegion": {
+          "type": "string",
+          "enum": [
+            "north_america",
+            "latin_america",
+            "europe",
+            "middle_east_africa",
+            "asia_pacific",
+            "oceania"
+          ]
+        },
+        "preferredStation": {
+          "type": "string",
+          "enum": [
+            "witchhouse",
+            "wave",
+            "future_garage",
+            "progressive_trance"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "preferredRegion", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Owner-only PII record storing user email isolated from public profiles.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "updatedAt"]
+    },
+    "UserSynthPreset": {
+      "title": "UserSynthPreset",
+      "description": "Cloud-synced custom SynthPatch saved by an authenticated producer.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "genre": {
+          "type": "string",
+          "enum": [
+            "witchhouse",
+            "wave",
+            "future_garage",
+            "progressive_trance"
+          ]
+        },
+        "bpm": {
+          "type": "number"
+        },
+        "filterCutoff": {
+          "type": "number"
+        },
+        "patch": {
+          "type": "object"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "uid", "name", "genre", "bpm", "filterCutoff", "patch", "createdAt", "updatedAt"]
+    },
+    "CommunityMix": {
+      "title": "CommunityMix",
+      "description": "Shared morphed or evolved synth patch published by an authenticated user.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "stationId": {
+          "type": "string",
+          "enum": [
+            "witchhouse",
+            "wave",
+            "future_garage",
+            "progressive_trance"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "bpm": {
+          "type": "number"
+        },
+        "filterCutoff": {
+          "type": "number"
+        },
+        "patch": {
+          "type": "object"
+        },
+        "likesCount": {
+          "type": "number"
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "authorUid", "authorName", "stationId", "title", "bpm", "filterCutoff", "patch", "likesCount", "isPublic", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User non-PII profile settings (preferred region and station)."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Isolated PII record (email) readable and writable only by the owner."
+    },
+    "/users/{userId}/presets/{presetId}": {
+      "schema": { "$ref": "#/entities/UserSynthPreset" },
+      "description": "Cloud-persisted custom synthesizer presets owned by the user."
+    },
+    "/communityMixes/{mixId}": {
+      "schema": { "$ref": "#/entities/CommunityMix" },
+      "description": "Community-shared morphed patches and studio mixes."
+    }
+  }
+}

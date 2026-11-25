@@ -10,6 +10,7 @@ import {
   StationState,
   WorldRegionId,
 } from '../src/types/radio.ts';
+import { resolvePatchSpatial } from '../src/audio/spatialConfig.ts';
 
 export interface PersistedCollectiveData {
   version: number;
@@ -45,12 +46,15 @@ export function loadPersistedCollective(): PersistedCollectiveData | null {
       return null;
     }
 
-    // Reset transient runtime flags on restart
+    // Reset transient runtime flags on restart and backfill 3D spatial configs
     for (const genre of Object.keys(parsed.stations) as StationGenre[]) {
       const st = parsed.stations[genre];
       st.isSynthesizing = false;
       st.listenerCount = 0;
       if (!st.currentTrackVotes) st.currentTrackVotes = { up: 0, down: 0 };
+      if (st.currentPatch) {
+        st.currentPatch.spatial = resolvePatchSpatial(st.currentPatch, genre);
+      }
       st.messages = (st.messages || []).map((m) => ({
         ...m,
         votes: m.votes ?? { up: 0, down: 0 },

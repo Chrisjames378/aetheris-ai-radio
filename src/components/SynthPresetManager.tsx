@@ -1,5 +1,16 @@
-import { ChangeEvent, FormEvent, useEffect, useRef, useState } from 'react';
-import { Download, FolderUp, Save, Trash2, Upload } from 'lucide-react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import {
+  Cloud,
+  Download,
+  FolderUp,
+  Heart,
+  LogIn,
+  Save,
+  Share2,
+  Trash2,
+  Upload,
+} from 'lucide-react';
+import { useFirebase } from '../context/FirebaseContext';
 import {
   FilterType,
   OscWaveform,
@@ -257,12 +268,25 @@ export function SynthPresetManager({
   currentPatch,
   onApplyPatch,
 }: SynthPresetManagerProps) {
+  const {
+    user,
+    cloudPresets,
+    communityMixes,
+    signIn,
+    saveCloudPreset,
+    deleteCloudPreset,
+    publishCommunityMix,
+    likeCommunityMix,
+    deleteCommunityMix,
+  } = useFirebase();
+
   const [presets, setPresets] = useState<SavedSynthPreset[]>(() =>
     readStoredPresets()
   );
   const [presetName, setPresetName] = useState(currentPatch.title);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [cloudBusy, setCloudBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -278,7 +302,7 @@ export function SynthPresetManager({
     }
   };
 
-  const handleSavePreset = (e: FormEvent) => {
+  const handleSavePreset = async (e: FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     const trimmed = presetName.trim() || currentPatch.title;
@@ -304,7 +328,52 @@ export function SynthPresetManager({
         : [newEntry, ...presets];
 
     persist(next);
-    setStatusMsg(`Saved "${trimmed}" to local preset bank.`);
+
+    if (user) {
+      setCloudBusy(true);
+      try {
+        const existingCloud = cloudPresets.find(
+          (cp) => cp.name.toLowerCase() === trimmed.toLowerCase()
+        );
+        await saveCloudPreset(
+          trimmed,
+          activeStationId,
+          savedPatch,
+          existingCloud?.id
+        );
+        setStatusMsg(`Saved "${trimmed}" to Firestore Cloud & Local Bank.`);
+      } catch (err) {
+        setErrorMsg(
+          err instanceof Error
+            ? `Saved locally, but cloud sync failed: ${err.message}`
+            : 'Saved locally; cloud sync failed.'
+        );
+      } finally {
+        setCloudBusy(false);
+      }
+    } else {
+      setStatusMsg(`Saved "${trimmed}" to local preset bank.`);
+    }
+  };
+
+  const handlePublishMix = async () => {
+    if (!user) {
+      await signIn();
+      return;
+    }
+    setErrorMsg(null);
+    setCloudBusy(true);
+    try {
+      const title = presetName.trim() || currentPatch.title;
+      await publishCommunityMix(title, activeStationId, currentPatch);
+      setStatusMsg(`Published "${title}" to Community Cloud Mixes!`);
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Unable to publish community mix.'
+      );
+    } finally {
+      setCloudBusy(false);
+    }
   };
 
   const handleExportCurrent = () => {
@@ -455,13 +524,30 @@ export function SynthPresetManager({
           />
         </div>
 
-        <button
-          type="submit"
-          className="inline-flex items-center justify-center gap-1.5 rounded-md bg-amber-500 px-4 py-2 text-xs font-semibold text-[#0A0C0F] hover:bg-amber-400 transition-colors whitespace-nowrap shrink-0"
-        >
-          <Save className="h-3.5 w-3.5" aria-hidden="true" />
-          <span>Save to Local Bank</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={cloudBusy}
+            onClick={() => void handlePublishMix()}
+            className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/45 bg-amber-500/12 px-3.5 py-2 text-xs font-medium text-amber-300 hover:bg-amber-500/20 transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
+          >
+            {user ? (
+              <Share2 className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <LogIn className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            <span>{user ? 'Publish to Cloud Mixes' : 'Sign In for Cloud Sync'}</span>
+          </button>
+
+          <button
+            type="submit"
+            disabled={cloudBusy}
+            className="inline-flex items-center justify-center gap-1.5 rounded-md bg-amber-500 px-4 py-2 text-xs font-semibold text-[#0A0C0F] hover:bg-amber-400 transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
+          >
+            <Save className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{user ? 'Save to Cloud & Local' : 'Save to Local Bank'}</span>
+          </button>
+        </div>
       </form>
 
       {(statusMsg || errorMsg) && (
@@ -554,6 +640,147 @@ export function SynthPresetManager({
             ))}
           </div>
         )}
+      </div>
+
+      {/* Firestore Cloud Presets & Community Mixes */}
+      <div className="mt-6 grid grid-cols-1 gap-5 border-t border-white/8 pt-5 lg:grid-cols-2">
+        {/* Cloud Personal Presets */}
+        <div>
+          <div className="mb-2 flex items-center justify-between text-xs text-[#8B949E]">
+            <span className="inline-flex items-center gap-1.5 font-medium text-[#D1D5DB]">
+              <Cloud className="h-3.5 w-3.5 text-amber-400" aria-hidden="true" />
+              <span>Firestore Cloud Presets</span>
+            </span>
+            <span className="font-mono tabular-nums">
+              {user ? `${cloudPresets.length} synced` : 'Sign in required'}
+            </span>
+          </div>
+
+          {!user ? (
+            <div className="rounded-md border border-white/6 bg-[#0B0D11] px-4 py-5 text-center text-xs text-[#8B949E]">
+              Sign in with Google to permanently sync presets across devices and server restarts.
+            </div>
+          ) : cloudPresets.length === 0 ? (
+            <div className="rounded-md border border-white/6 bg-[#0B0D11] px-4 py-5 text-center text-xs text-[#8B949E]">
+              No cloud presets yet. Save a patch above while signed in to sync it here.
+            </div>
+          ) : (
+            <div className="divide-y divide-white/6 rounded-md border border-white/8 bg-[#0B0D11] max-h-64 overflow-y-auto">
+              {cloudPresets.map((cp) => (
+                <div
+                  key={cp.id}
+                  className="flex items-center justify-between gap-3 px-3.5 py-2.5 hover:bg-[#12161D]"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-xs font-medium text-[#F1F3F5]">
+                      {cp.name}
+                    </div>
+                    <div className="font-mono text-[11px] text-[#8B949E] tabular-nums">
+                      {cp.genre.replace('_', ' ')} · {cp.bpm} BPM · {cp.filterCutoff} Hz
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onApplyPatch({
+                          ...cp.patch,
+                          id: `${activeStationId}-cloud-${Date.now()}`,
+                        });
+                        setStatusMsg(`Loaded cloud preset "${cp.name}".`);
+                      }}
+                      className="rounded border border-white/14 bg-[#171B22] px-2.5 py-1 text-[11px] font-medium text-[#F1F3F5] hover:bg-[#1E242E]"
+                    >
+                      Load
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void deleteCloudPreset(cp.id)}
+                      aria-label={`Delete cloud preset ${cp.name}`}
+                      className="rounded border border-white/10 bg-[#14181F] p-1 text-[#8B949E] hover:border-red-500/40 hover:text-red-300"
+                    >
+                      <Trash2 className="h-3 w-3" aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Community Mixes Feed */}
+        <div>
+          <div className="mb-2 flex items-center justify-between text-xs text-[#8B949E]">
+            <span className="inline-flex items-center gap-1.5 font-medium text-[#D1D5DB]">
+              <Share2 className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+              <span>Community Cloud Mixes</span>
+            </span>
+            <span className="font-mono tabular-nums">
+              {user ? `${communityMixes.length} shared` : 'Sign in to browse'}
+            </span>
+          </div>
+
+          {!user ? (
+            <div className="rounded-md border border-white/6 bg-[#0B0D11] px-4 py-5 text-center text-xs text-[#8B949E]">
+              Sign in with Google to audition and like patches published by other producers.
+            </div>
+          ) : communityMixes.length === 0 ? (
+            <div className="rounded-md border border-white/6 bg-[#0B0D11] px-4 py-5 text-center text-xs text-[#8B949E]">
+              Be the first producer to publish a morphed mix to the community cloud!
+            </div>
+          ) : (
+            <div className="divide-y divide-white/6 rounded-md border border-white/8 bg-[#0B0D11] max-h-64 overflow-y-auto">
+              {communityMixes.map((mix) => (
+                <div
+                  key={mix.id}
+                  className="flex items-center justify-between gap-3 px-3.5 py-2.5 hover:bg-[#12161D]"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-xs font-medium text-[#F1F3F5]">
+                      {mix.title}
+                    </div>
+                    <div className="truncate font-mono text-[11px] text-[#8B949E] tabular-nums">
+                      by {mix.authorName} · {mix.bpm} BPM · {mix.filterCutoff} Hz
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => void likeCommunityMix(mix.id)}
+                      className="inline-flex items-center gap-1 rounded border border-white/12 bg-[#14181F] px-2 py-1 font-mono text-[11px] text-amber-300 hover:border-amber-500/40"
+                    >
+                      <Heart className="h-3 w-3" aria-hidden="true" />
+                      <span>{mix.likesCount}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onApplyPatch({
+                          ...mix.patch,
+                          id: `${activeStationId}-mix-${Date.now()}`,
+                        });
+                        setStatusMsg(`Loaded community mix "${mix.title}".`);
+                      }}
+                      className="rounded border border-white/14 bg-[#171B22] px-2.5 py-1 text-[11px] font-medium text-[#F1F3F5] hover:bg-[#1E242E]"
+                    >
+                      Load
+                    </button>
+                    {mix.authorUid === user.uid && (
+                      <button
+                        type="button"
+                        onClick={() => void deleteCommunityMix(mix.id)}
+                        aria-label={`Delete community mix ${mix.title}`}
+                        className="rounded border border-white/10 bg-[#14181F] p-1 text-[#8B949E] hover:border-red-500/40 hover:text-red-300"
+                      >
+                        <Trash2 className="h-3 w-3" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </section>
   );
