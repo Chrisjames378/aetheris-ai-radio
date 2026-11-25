@@ -143,8 +143,8 @@ export function CollectiveView({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative">
+        <div className="flex w-full flex-wrap items-center gap-3 lg:w-auto">
+          <div className="relative w-full sm:w-64">
             <Search
               className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#6E7781]"
               aria-hidden="true"
@@ -157,7 +157,7 @@ export function CollectiveView({
                 setPage(1);
               }}
               placeholder="Search ID, codename, specialty..."
-              className="w-64 rounded-md border border-white/12 bg-[#0B0D11] py-2 pl-8 pr-3 text-xs text-[#F1F3F5] placeholder-[#6E7781] focus:border-amber-500 focus:outline-none"
+              className="w-full rounded-md border border-white/12 bg-[#0B0D11] py-2 pl-8 pr-3 text-xs text-[#F1F3F5] placeholder-[#6E7781] focus:border-amber-500 focus:outline-none"
             />
           </div>
 

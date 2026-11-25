@@ -295,7 +295,7 @@ export function LiveBroadcastView({
 
               {/* 4-Bar Arrangement Progress Strip */}
               <div
-                className="mt-3 grid grid-cols-4 gap-1.5 text-[10px] font-mono"
+                className="mt-3 grid grid-cols-2 gap-1.5 text-[10px] font-mono sm:grid-cols-4"
                 aria-label="4-bar arrangement phase"
               >
                 {(['Bar 1 · Intro', 'Bar 2 · Groove', 'Bar 3 · Lift', 'Bar 4 · Turn'] as const).map(
@@ -417,11 +417,11 @@ export function LiveBroadcastView({
         <div className="flex flex-col justify-between rounded-lg border border-white/8 bg-[#111419]/88 p-6 backdrop-blur-[2px] lg:col-span-5">
           <div>
             <div className="flex items-center justify-between gap-4 border-b border-white/8 pb-3.5">
-              <div>
+              <div className="min-w-0 flex-1">
                 <h2 className="font-display text-base font-semibold text-[#F1F3F5]">
                   Live On-Air Studio Feed
                 </h2>
-                <p className="mt-0.5 text-xs text-[#8B949E] truncate max-w-[340px]">
+                <p className="mt-0.5 truncate text-xs text-[#8B949E]">
                   Topic: {station.currentTopic}
                 </p>
               </div>

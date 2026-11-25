@@ -1,4 +1,4 @@
-import { Radio, Volume2, VolumeX } from 'lucide-react';
+import { Eye, EyeOff, Radio, Volume2, VolumeX } from 'lucide-react';
 
 export type WorkspaceTab = 'broadcast' | 'synth' | 'collective' | 'superintendent';
 
@@ -9,6 +9,8 @@ interface TopBarProps {
   onToggleAudio: () => void;
   masterVolume: number;
   onMasterVolumeChange: (volume: number) => void;
+  showMoodCanvas: boolean;
+  onToggleMoodCanvas: () => void;
 }
 
 const NAV_ITEMS: { id: WorkspaceTab; label: string }[] = [
@@ -25,24 +27,26 @@ export function TopBar({
   onToggleAudio,
   masterVolume,
   onMasterVolumeChange,
+  showMoodCanvas,
+  onToggleMoodCanvas,
 }: TopBarProps) {
   const volumePercent = Math.round(masterVolume * 100);
 
   return (
     <header className="sticky top-0 z-30 border-b border-white/8 bg-[#0A0C0F]/95 backdrop-blur-sm">
-      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-8 px-6 py-3.5">
+      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-2 px-3.5 py-2.5 sm:px-6 md:gap-8 md:py-3.5">
         <button
           type="button"
           onClick={() => onSelectTab('broadcast')}
-          className="flex items-center gap-2.5 text-lg font-semibold tracking-tight text-[#F1F3F5] whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 rounded"
+          className="flex items-center gap-2 text-base sm:text-lg font-semibold tracking-tight text-[#F1F3F5] whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 rounded"
         >
-          <Radio className="h-4 w-4 text-amber-500" aria-hidden="true" />
+          <Radio className="h-4 w-4 text-amber-500 shrink-0" aria-hidden="true" />
           <span className="font-display">Aetheris Radio</span>
         </button>
 
         <nav
           aria-label="Primary workspace navigation"
-          className="flex items-center gap-6 overflow-x-auto"
+          className="hidden md:flex items-center gap-6 overflow-x-auto"
         >
           {NAV_ITEMS.map((item) => {
             const active = activeTab === item.id;
@@ -69,8 +73,8 @@ export function TopBar({
           })}
         </nav>
 
-        <div className="flex items-center gap-4 shrink-0">
-          <div className="hidden sm:flex items-center gap-2.5">
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="hidden lg:flex items-center gap-2.5">
             <label
               htmlFor="master-volume-slider"
               className="text-xs text-[#8B949E] whitespace-nowrap"
@@ -95,8 +99,38 @@ export function TopBar({
 
           <button
             type="button"
+            aria-pressed={showMoodCanvas}
+            aria-label={
+              showMoodCanvas
+                ? 'Disable background mood canvas to reduce GPU load'
+                : 'Enable background mood canvas'
+            }
+            title={
+              showMoodCanvas
+                ? 'Background Canvas On (click to disable and reduce GPU load)'
+                : 'Background Canvas Off (GPU saver mode)'
+            }
+            onClick={onToggleMoodCanvas}
+            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1.5 sm:px-2.5 sm:py-2 text-xs font-medium transition-colors duration-150 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
+              showMoodCanvas
+                ? 'border-white/14 bg-[#171B22] text-[#D1D5DB] hover:bg-[#1E242E]'
+                : 'border-white/8 bg-[#0B0D11] text-[#8B949E] hover:border-white/20 hover:text-[#F1F3F5]'
+            }`}
+          >
+            {showMoodCanvas ? (
+              <Eye className="h-3.5 w-3.5 text-amber-400" aria-hidden="true" />
+            ) : (
+              <EyeOff className="h-3.5 w-3.5 text-[#6E7781]" aria-hidden="true" />
+            )}
+            <span className="hidden md:inline">
+              {showMoodCanvas ? 'Canvas On' : 'Canvas Off'}
+            </span>
+          </button>
+
+          <button
+            type="button"
             onClick={onToggleAudio}
-            className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-xs font-semibold transition-colors duration-150 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${
+            className={`inline-flex items-center gap-1.5 sm:gap-2 rounded-md px-3 py-1.5 sm:px-4 sm:py-2 text-xs font-semibold transition-colors duration-150 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${
               isAudioActive
                 ? 'bg-amber-500 text-[#0A0C0F] hover:bg-amber-400'
                 : 'bg-[#F1F3F5] text-[#0A0C0F] hover:bg-white'
@@ -104,18 +138,53 @@ export function TopBar({
           >
             {isAudioActive ? (
               <>
-                <Volume2 className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Live Audio On</span>
+                <Volume2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span className="hidden sm:inline">Live Audio On</span>
+                <span className="sm:hidden">Live On</span>
               </>
             ) : (
               <>
-                <VolumeX className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Tune In Live</span>
+                <VolumeX className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span className="hidden sm:inline">Tune In Live</span>
+                <span className="sm:hidden">Tune In</span>
               </>
             )}
           </button>
         </div>
       </div>
+
+      {/* Compact Mobile Workspace Nav */}
+      <nav
+        aria-label="Mobile workspace navigation"
+        className="flex md:hidden items-center justify-between gap-1 border-t border-white/6 px-3.5 py-1.5 overflow-x-auto"
+      >
+        {NAV_ITEMS.map((item) => {
+          const active = activeTab === item.id;
+          const shortLabel =
+            item.id === 'broadcast'
+              ? 'Live'
+              : item.id === 'synth'
+                ? 'Synth'
+                : item.id === 'collective'
+                  ? 'Collective'
+                  : 'Super';
+          return (
+            <button
+              key={item.id}
+              type="button"
+              aria-label={item.label}
+              onClick={() => onSelectTab(item.id)}
+              className={`rounded px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
+                active
+                  ? 'bg-[#1D222B] text-amber-400'
+                  : 'text-[#8B949E] hover:text-[#F1F3F5]'
+              }`}
+            >
+              {shortLabel}
+            </button>
+          );
+        })}
+      </nav>
     </header>
   );
 }

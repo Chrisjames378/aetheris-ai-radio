@@ -846,8 +846,10 @@ class BroadcastEngine {
         this.quotaCooldownUntil =
           Date.now() +
           Math.min(3600000, Math.max(300000, parsed.retryAfterMs ?? 900000));
+      } else if (parsed.isTransientUnavailable) {
+        this.quotaCooldownUntil = Date.now() + 120000;
       }
-      if (options?.isAutonomous && parsed.isQuotaExhausted) {
+      if (options?.isAutonomous && (parsed.isQuotaExhausted || parsed.isTransientUnavailable)) {
         console.warn(`Autonomous cycle paused (${stationId}): ${parsed.message}`);
       } else {
         console.error(`Superintendent cycle error (${stationId}):`, parsed.message);

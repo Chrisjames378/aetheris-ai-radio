@@ -36,15 +36,31 @@ export interface ParsedGeminiError {
   statusCode: number;
   message: string;
   isQuotaExhausted: boolean;
+  isTransientUnavailable: boolean;
   retryAfterMs?: number;
+}
+
+function extractEmbeddedApiMessage(raw: string): string | null {
+  const jsonStart = raw.indexOf('{');
+  if (jsonStart === -1) return null;
+  try {
+    const parsed = JSON.parse(raw.slice(jsonStart)) as {
+      error?: { message?: string; code?: number; status?: string };
+      message?: string;
+    };
+    return parsed?.error?.message || parsed?.message || null;
+  } catch {
+    return null;
+  }
 }
 
 export function parseGeminiError(err: unknown): ParsedGeminiError {
   const raw = err instanceof Error ? err.message : String(err || 'Unknown Gemini API error');
+  const lower = raw.toLowerCase();
   const isQuota =
     raw.includes('429') ||
     raw.includes('RESOURCE_EXHAUSTED') ||
-    raw.toLowerCase().includes('quota');
+    lower.includes('quota');
 
   if (isQuota) {
     let retryAfterMs: number | undefined;
@@ -55,9 +71,30 @@ export function parseGeminiError(err: unknown): ParsedGeminiError {
     return {
       statusCode: 429,
       isQuotaExhausted: true,
+      isTransientUnavailable: false,
       retryAfterMs,
       message:
-        'Gemini API free-tier quota exceeded. Wait for the quota window to reset or select a billing-enabled API key in Settings > Secrets.',
+        'Gemini API quota window reached. Autonomous synthesis will resume automatically after cooldown.',
+    };
+  }
+
+  const isTransient =
+    raw.includes('503') ||
+    raw.includes('502') ||
+    raw.includes('504') ||
+    raw.includes('UNAVAILABLE') ||
+    raw.includes('DEADLINE_EXCEEDED') ||
+    lower.includes('high demand') ||
+    lower.includes('temporarily unavailable') ||
+    lower.includes('overloaded');
+
+  if (isTransient) {
+    return {
+      statusCode: 503,
+      isQuotaExhausted: false,
+      isTransientUnavailable: true,
+      message:
+        'Gemini model is experiencing temporary high demand. Please retry in a few seconds.',
     };
   }
 
@@ -65,15 +102,23 @@ export function parseGeminiError(err: unknown): ParsedGeminiError {
     return {
       statusCode: 403,
       isQuotaExhausted: false,
+      isTransientUnavailable: false,
       message: 'Gemini API key is missing or invalid. Please check Settings > Secrets.',
     };
   }
 
+  const extracted = extractEmbeddedApiMessage(raw);
+  const cleanMsg = extracted || raw;
   return {
     statusCode: 500,
     isQuotaExhausted: false,
-    message: raw.length > 260 ? `${raw.slice(0, 260)}...` : raw,
+    isTransientUnavailable: false,
+    message: cleanMsg.length > 220 ? `${cleanMsg.slice(0, 220)}...` : cleanMsg,
   };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function generateJsonWithFallback(
@@ -105,26 +150,44 @@ async function generateJsonWithFallback(
       return { response, modelUsed: 'gemini-4-hydrogen' };
     } catch (err) {
       const parsed = parseGeminiError(err);
-      if (!parsed.isQuotaExhausted) {
+      if (!parsed.isQuotaExhausted && !parsed.isTransientUnavailable) {
         throw err;
       }
-      // Pause gemini-4-hydrogen attempts during its quota reset window and fall back to gemini-3.1-flash-lite
-      hydrogenQuotaBlockedUntil =
-        Date.now() + Math.min(3600000, Math.max(300000, parsed.retryAfterMs ?? 900000));
-      console.warn('gemini-4-hydrogen quota reached; falling back to gemini-3.1-flash-lite.');
+      if (parsed.isQuotaExhausted) {
+        hydrogenQuotaBlockedUntil =
+          Date.now() + Math.min(3600000, Math.max(300000, parsed.retryAfterMs ?? 900000));
+        console.warn('gemini-4-hydrogen quota reached; falling back to gemini-3.1-flash-lite.');
+      } else {
+        // Temporary 503/high demand: pause hydrogen briefly (2 min) and route to fallback model
+        hydrogenQuotaBlockedUntil = Date.now() + 120000;
+        console.warn('gemini-4-hydrogen temporarily unavailable (503); routing to gemini-3.1-flash-lite.');
+      }
     }
   }
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.1-flash-lite',
-    contents,
-    config: {
-      ...config,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
-      responseMimeType: 'application/json',
-    },
-  });
-  return { response, modelUsed: 'gemini-3.1-flash-lite' };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.1-flash-lite',
+        contents,
+        config: {
+          ...config,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+          responseMimeType: 'application/json',
+        },
+      });
+      return { response, modelUsed: 'gemini-3.1-flash-lite' };
+    } catch (err) {
+      const parsed = parseGeminiError(err);
+      if (attempt === 0 && parsed.isTransientUnavailable) {
+        await sleep(900);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error('Gemini model temporarily unavailable after fallback retry.');
 }
 
 const GENRE_SPEC: Record<
@@ -779,8 +842,8 @@ export async function synthesizeRadioDialogueAudio(
     }
   } catch (err) {
     const parsedErr = parseGeminiError(err);
-    if (parsedErr.isQuotaExhausted) {
-      console.warn(`TTS quota exhausted on ${station.id}; skipping audio synthesis.`);
+    if (parsedErr.isQuotaExhausted || parsedErr.isTransientUnavailable) {
+      console.warn(`TTS unavailable on ${station.id}; skipping audio synthesis.`);
       return null;
     }
     console.warn(
@@ -790,43 +853,51 @@ export async function synthesizeRadioDialogueAudio(
   }
 
   // Fallback to v1beta Interactions API multi-speaker TTS
-  const interaction = await aiBeta.interactions.create({
-    model: 'gemini-3.8-flash-tts',
-    input: lines.map((line) => {
-      const host = line.speaker === hostA.name ? hostA : hostB;
-      return {
-        type: 'text' as const,
-        text: `${host.name}: ${line.text}`,
-        annotations: [
-          {
-            type: 'speech_metadata' as const,
-            speaker: host.name,
-            style: host.voiceStyle,
-          },
-        ],
-      };
-    }),
-    response_format: { type: 'audio' },
-    generation_config: {
-      speech_config: {
-        speakers: [
-          {
-            speaker: hostA.name,
-            voice: hostA.voiceName,
-          },
-          {
-            speaker: hostB.name,
-            voice: hostB.voiceName,
-          },
-        ],
+  try {
+    const interaction = await aiBeta.interactions.create({
+      model: 'gemini-3.8-flash-tts',
+      input: lines.map((line) => {
+        const host = line.speaker === hostA.name ? hostA : hostB;
+        return {
+          type: 'text' as const,
+          text: `${host.name}: ${line.text}`,
+          annotations: [
+            {
+              type: 'speech_metadata' as const,
+              speaker: host.name,
+              style: host.voiceStyle,
+            },
+          ],
+        };
+      }),
+      response_format: { type: 'audio' },
+      generation_config: {
+        speech_config: {
+          speakers: [
+            {
+              speaker: hostA.name,
+              voice: hostA.voiceName,
+            },
+            {
+              speaker: hostB.name,
+              voice: hostB.voiceName,
+            },
+          ],
+        },
       },
-    },
-  });
+    });
 
-  const audio = interaction.output_audio;
-  if (!audio?.data) return null;
-  return {
-    audioBase64: audio.data,
-    audioMimeType: audio.mime_type || 'audio/wav',
-  };
+    const audio = interaction.output_audio;
+    if (!audio?.data) return null;
+    return {
+      audioBase64: audio.data,
+      audioMimeType: audio.mime_type || 'audio/wav',
+    };
+  } catch (fallbackErr) {
+    console.warn(
+      `TTS fallback skipped on ${station.id}:`,
+      parseGeminiError(fallbackErr).message
+    );
+    return null;
+  }
 }

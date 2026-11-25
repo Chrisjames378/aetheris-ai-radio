@@ -123,6 +123,7 @@ export class HybridSynthEngine {
   private isPlaying = false;
   private timerId: number | null = null;
   private lastAutomatedDrive = -1;
+  private lastDriveAmount = -1;
   private stepListeners = new Set<(stepInBar: number, bar: number) => void>();
   private activeVoiceSource: AudioBufferSourceNode | null = null;
   private voiceQueue: { base64: string; onStart?: () => void; onEnd?: () => void }[] =
@@ -272,7 +273,12 @@ export class HybridSynthEngine {
   private applyGlobalFx(patch: SynthPatch, timeConstant = 0.08) {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
-    if (this.driveShaper) {
+    if (
+      this.driveShaper &&
+      Math.abs(patch.drive - this.lastDriveAmount) >= 0.015
+    ) {
+      this.lastDriveAmount = patch.drive;
+      this.lastAutomatedDrive = patch.drive;
       this.driveShaper.curve = makeDistortionCurve(patch.drive);
     }
     if (this.reverbGain) {

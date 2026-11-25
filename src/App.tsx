@@ -83,6 +83,14 @@ export default function App() {
     reconnectCount: 0,
     lastPongAt: null,
   });
+  const [showMoodCanvas, setShowMoodCanvas] = useState<boolean>(() => {
+    try {
+      const saved = window.localStorage.getItem('aetheris_mood_canvas_v1');
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
 
   const wsRef = useRef<WebSocket | null>(null);
   const activeStationRef = useRef<StationGenre>(activeStationId);
@@ -584,6 +592,15 @@ export default function App() {
     [isAudioActive, collective, activeStationId]
   );
 
+  const handlePreviewPatch = useCallback(
+    (stationId: StationGenre, patch: SynthPatch) => {
+      if (stationId === activeStationRef.current) {
+        synthEngine.setStationPatch(stationId, patch);
+      }
+    },
+    []
+  );
+
   const handleUpdatePatch = useCallback(
     (stationId: StationGenre, partial: Partial<SynthPatch>) => {
       setCollective((prev) => {
@@ -694,14 +711,28 @@ export default function App() {
     }
   }, [collective]);
 
+  const handleToggleMoodCanvas = useCallback(() => {
+    setShowMoodCanvas((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem('aetheris_mood_canvas_v1', String(next));
+      } catch {
+        // Ignore storage errors
+      }
+      return next;
+    });
+  }, []);
+
   return (
     <div className="relative min-h-screen bg-[#0A0C0F] text-[#F1F3F5] flex flex-col">
-      <MoodReactiveBackgroundCanvas
-        regionalMood={collective?.regionalMood ?? null}
-        activeStationId={activeStationId}
-        listenerRegion={listenerRegion}
-        isAudioActive={isAudioActive}
-      />
+      {showMoodCanvas && (
+        <MoodReactiveBackgroundCanvas
+          regionalMood={collective?.regionalMood ?? null}
+          activeStationId={activeStationId}
+          listenerRegion={listenerRegion}
+          isAudioActive={isAudioActive}
+        />
+      )}
 
       <div className="relative z-10 flex min-h-screen flex-col">
         <TopBar
@@ -711,9 +742,11 @@ export default function App() {
           onToggleAudio={handleToggleAudio}
           masterVolume={masterVolume}
           onMasterVolumeChange={handleMasterVolumeChange}
+          showMoodCanvas={showMoodCanvas}
+          onToggleMoodCanvas={handleToggleMoodCanvas}
         />
 
-        <main className="mx-auto w-full max-w-[1440px] flex-1 px-6 py-6">
+        <main className="mx-auto w-full max-w-[1440px] flex-1 px-3.5 py-4 sm:px-6 sm:py-6">
         {auditioningEntry && (
           <div
             role="status"
@@ -743,17 +776,17 @@ export default function App() {
         {errorBanner && (
           <div
             role="alert"
-            className="mb-5 flex items-center justify-between gap-3 rounded-md border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200"
+            className="mb-5 flex items-start justify-between gap-3 rounded-md border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200"
           >
-            <div className="flex items-center gap-2.5">
-              <AlertCircle className="h-4 w-4 shrink-0 text-red-400" aria-hidden="true" />
-              <span>{errorBanner}</span>
+            <div className="flex min-w-0 items-start gap-2.5">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" aria-hidden="true" />
+              <span className="min-w-0 break-words leading-relaxed">{errorBanner}</span>
             </div>
             <button
               type="button"
               onClick={() => setErrorBanner(null)}
               aria-label="Dismiss error"
-              className="rounded p-1 text-red-300 hover:bg-red-500/20"
+              className="shrink-0 rounded p-1 text-red-300 hover:bg-red-500/20"
             >
               <X className="h-4 w-4" aria-hidden="true" />
             </button>
@@ -794,12 +827,15 @@ export default function App() {
         ) : activeTab === 'synth' ? (
           <SynthStudioView
             station={collective.stations[activeStationId]}
+            stations={collective.stations}
+            evolutionLog={collective.evolutionLog}
             activeStationId={activeStationId}
             onSelectStation={handleSelectStation}
             isAudioActive={isAudioActive}
             onStartAudio={handleStartAudio}
             currentStep={currentStep}
             currentBar={currentBar}
+            onPreviewPatch={handlePreviewPatch}
             onUpdatePatch={handleUpdatePatch}
             onTriggerEvolution={handleTriggerEvolution}
           />

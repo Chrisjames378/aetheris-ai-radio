@@ -1,6 +1,7 @@
-import { FormEvent, useState } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { RefreshCw, Volume2 } from 'lucide-react';
 import {
+  EvolutionLogEntry,
   FilterType,
   OscWaveform,
   StationGenre,
@@ -8,16 +9,20 @@ import {
   SynthPatch,
 } from '../types/radio';
 import { AutomationLanesEditor } from './AutomationLanesEditor';
+import { SoundMorpherPanel } from './SoundMorpherPanel';
 import { SynthPresetManager } from './SynthPresetManager';
 
 interface SynthStudioViewProps {
   station: StationState;
+  stations: Record<StationGenre, StationState>;
+  evolutionLog: EvolutionLogEntry[];
   activeStationId: StationGenre;
   onSelectStation: (stationId: StationGenre) => void;
   isAudioActive: boolean;
   onStartAudio: () => void;
   currentStep: number;
   currentBar: number;
+  onPreviewPatch: (stationId: StationGenre, patch: SynthPatch) => void;
   onUpdatePatch: (stationId: StationGenre, partial: Partial<SynthPatch>) => void;
   onTriggerEvolution: (stationId: StationGenre, prompt?: string) => Promise<void>;
 }
@@ -33,19 +38,71 @@ const STATIONS: { id: StationGenre; label: string }[] = [
 
 export function SynthStudioView({
   station,
+  stations,
+  evolutionLog,
   activeStationId,
   onSelectStation,
   isAudioActive,
   onStartAudio,
   currentStep,
   currentBar,
+  onPreviewPatch,
   onUpdatePatch,
   onTriggerEvolution,
 }: SynthStudioViewProps) {
   const [directive, setDirective] = useState('');
   const [isEvolving, setIsEvolving] = useState(false);
+  const [previewPatch, setPreviewPatch] = useState<SynthPatch | null>(null);
 
-  const patch = station.currentPatch;
+  const patch = previewPatch ?? station.currentPatch;
+
+  useEffect(() => {
+    setPreviewPatch(null);
+  }, [activeStationId, station.currentPatch.id]);
+
+  const handlePreviewMorph = useCallback(
+    (nextMorphed: SynthPatch | null) => {
+      setPreviewPatch(nextMorphed);
+      onPreviewPatch(activeStationId, nextMorphed ?? station.currentPatch);
+    },
+    [activeStationId, onPreviewPatch, station.currentPatch]
+  );
+
+  const handleCommitMorph = useCallback(
+    (morphed: SynthPatch) => {
+      setPreviewPatch(null);
+      onUpdatePatch(activeStationId, {
+        title: morphed.title,
+        authorModels: morphed.authorModels,
+        evolutionNote: morphed.evolutionNote,
+        bpm: morphed.bpm,
+        swing: morphed.swing,
+        rootMidi: morphed.rootMidi,
+        scaleIntervals: morphed.scaleIntervals,
+        osc1Wave: morphed.osc1Wave,
+        osc2Wave: morphed.osc2Wave,
+        detuneCents: morphed.detuneCents,
+        subLevel: morphed.subLevel,
+        noiseLevel: morphed.noiseLevel,
+        filterType: morphed.filterType,
+        filterCutoff: morphed.filterCutoff,
+        filterResonance: morphed.filterResonance,
+        lfoRate: morphed.lfoRate,
+        lfoDepth: morphed.lfoDepth,
+        attack: morphed.attack,
+        decay: morphed.decay,
+        sustain: morphed.sustain,
+        release: morphed.release,
+        drive: morphed.drive,
+        reverbMix: morphed.reverbMix,
+        delayMix: morphed.delayMix,
+        delayTimeBeats: morphed.delayTimeBeats,
+        steps: morphed.steps,
+        automation: morphed.automation,
+      });
+    },
+    [activeStationId, onUpdatePatch]
+  );
 
   const handleDirectiveSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -101,13 +158,13 @@ export function SynthStudioView({
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1 rounded-md border border-white/8 bg-[#0B0D11] p-1">
+          <div className="flex flex-wrap items-center gap-1 rounded-md border border-white/8 bg-[#0B0D11] p-1">
             {STATIONS.map((s) => (
               <button
                 key={s.id}
                 type="button"
                 onClick={() => onSelectStation(s.id)}
-                className={`rounded px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                className={`rounded px-2.5 sm:px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
                   s.id === activeStationId
                     ? 'bg-[#1D222B] text-[#F1F3F5]'
                     : 'text-[#8B949E] hover:text-[#F1F3F5]'
@@ -170,6 +227,19 @@ export function SynthStudioView({
           </span>
         </button>
       </form>
+
+      {/* Real-Time Sound Morphing Engine */}
+      <SoundMorpherPanel
+        activeStationId={activeStationId}
+        sourcePatch={station.currentPatch}
+        stations={stations}
+        evolutionLog={evolutionLog}
+        isAudioActive={isAudioActive}
+        currentBar={currentBar}
+        currentStep={currentStep}
+        onPreviewMorph={handlePreviewMorph}
+        onCommitMorph={handleCommitMorph}
+      />
 
       {/* Parameter Control Modules */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
