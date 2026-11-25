@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, X } from 'lucide-react';
+import { Analytics } from '@vercel/analytics/react';
 import { synthEngine } from './audio/HybridSynthEngine';
 import { CollectiveView } from './components/CollectiveView';
 import { LiveBroadcastView } from './components/LiveBroadcastView';
@@ -836,6 +837,7 @@ export default function App() {
           <span>512 Collaborative Models · Live Web Audio Synthesis</span>
         </div>
       </footer>
+      <Analytics />
       </div>
     </div>
   );
